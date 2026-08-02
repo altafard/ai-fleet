@@ -50,8 +50,12 @@ func ImageTag(dockerfileContent []byte) string {
 	return "ai-fleet:" + hex.EncodeToString(sum[:])[:12]
 }
 
+// BuildArgs deliberately passes no --progress flag: the legacy builder
+// rejects it (exit 125), and BuildKit auto-selects plain progress when its
+// output is piped — which it always is here. Both builders therefore
+// stream parseable plain text on every docker install.
 func BuildArgs(dockerfile, contextDir, tag string) []string {
-	return []string{"build", "--progress=plain", "-f", dockerfile, "-t", tag, contextDir}
+	return []string{"build", "-f", dockerfile, "-t", tag, contextDir}
 }
 
 // RunArgs passes env as bare "-e KEY": docker reads the value from its own

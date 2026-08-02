@@ -5,11 +5,20 @@ import (
 	"strconv"
 )
 
-var buildStepRe = regexp.MustCompile(`^#\d+ \[(?:[^\] ]+ )?(\d+)/(\d+)\] (.+)$`)
+var (
+	// BuildKit plain progress: `#5 [2/6] RUN npm ci` (optionally staged).
+	buildkitStepRe = regexp.MustCompile(`^#\d+ \[(?:[^\] ]+ )?(\d+)/(\d+)\] (.+)$`)
+	// Legacy builder: `Step 2/6 : RUN npm ci`.
+	legacyStepRe = regexp.MustCompile(`^Step (\d+)/(\d+) : (.+)$`)
+)
 
-// ParseBuildStep recognizes step lines of `docker build --progress=plain`.
+// ParseBuildStep recognizes build-step lines from both the BuildKit and the
+// legacy docker builder.
 func ParseBuildStep(line string) (int, int, string, bool) {
-	m := buildStepRe.FindStringSubmatch(line)
+	m := buildkitStepRe.FindStringSubmatch(line)
+	if m == nil {
+		m = legacyStepRe.FindStringSubmatch(line)
+	}
 	if m == nil {
 		return 0, 0, "", false
 	}

@@ -24,7 +24,7 @@ func TestMountArg(t *testing.T) {
 
 func TestBuildArgs(t *testing.T) {
 	got := BuildArgs("/p/Dockerfile", "/p", "ai-fleet:abc123def456")
-	want := []string{"build", "--progress=plain", "-f", "/p/Dockerfile", "-t", "ai-fleet:abc123def456", "/p"}
+	want := []string{"build", "-f", "/p/Dockerfile", "-t", "ai-fleet:abc123def456", "/p"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v", got)
 	}
