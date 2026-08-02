@@ -34,7 +34,7 @@ trap finish EXIT
 # child to finish. The trap then forwards the signal to claude and exits,
 # which lets the EXIT trap (finish) salvage a bundle before Docker's grace
 # period elapses and SIGKILLs everything.
-trap 'kill -TERM ${cpid:-0} 2>/dev/null; exit 130' TERM INT
+trap 'if [ -n "${cpid:-}" ]; then kill -TERM "$cpid" 2>/dev/null; fi; exit 130' TERM INT
 
 git clone -q "$SRC/clone" "$WS" >/dev/null 2>&1
 cd "$WS"
