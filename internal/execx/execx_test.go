@@ -26,6 +26,24 @@ func TestRunNonZeroIsNotError(t *testing.T) {
 	}
 }
 
+func TestRunCtxCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := RunCtx(ctx, "", nil, "git", "--version"); err == nil {
+		t.Fatal("want error for already-cancelled context")
+	}
+}
+
+func TestRunCtxEnvPassthrough(t *testing.T) {
+	r, err := RunCtx(context.Background(), "", []string{"GIT_AUTHOR_NAME=ctx-test"}, "git", "var", "GIT_AUTHOR_IDENT")
+	if err != nil || r.ExitCode != 0 {
+		t.Fatalf("r=%+v err=%v", r, err)
+	}
+	if !strings.HasPrefix(r.Stdout, "ctx-test ") {
+		t.Fatalf("env not passed through: %q", r.Stdout)
+	}
+}
+
 func TestStreamLinesAndExit(t *testing.T) {
 	var lines []string
 	code, err := Stream(context.Background(), "", nil,

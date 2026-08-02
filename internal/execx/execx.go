@@ -24,8 +24,18 @@ type Result struct {
 // Run executes and captures. A non-zero exit code is reported in Result,
 // not as an error; error means the process could not run at all.
 func Run(dir, name string, args ...string) (Result, error) {
-	cmd := exec.Command(name, args...)
+	return RunCtx(context.Background(), dir, nil, name, args...)
+}
+
+// RunCtx is Run with a context (timeout/cancel) and extra env entries
+// appended to os.Environ(). A context-killed process surfaces as a
+// non-zero ExitCode, not an error.
+func RunCtx(ctx context.Context, dir string, env []string, name string, args ...string) (Result, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()

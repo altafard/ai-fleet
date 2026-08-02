@@ -3,13 +3,20 @@
 package gitx
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/altafard/ai-fleet/internal/execx"
 )
+
+// baselineQueryTimeout bounds the single ls-remote metadata query so an
+// unreachable remote can never hang a run.
+const baselineQueryTimeout = 10 * time.Second
 
 func git(dir string, args ...string) (execx.Result, error) {
 	return execx.Run(dir, "git", args...)
@@ -30,52 +37,183 @@ func RepoRoot(dir string) (string, error) {
 
 // Base is the resolved baseline the run starts from.
 type Base struct {
+	Remote string // e.g. "origin"; empty when resolved from a local branch
 	Ref    string // e.g. "origin/main" or "main"
 	Branch string // e.g. "main" — the PR base branch
 	SHA    string
+	Source string // which rule resolved it: remote-head-local | remote-query | inferred-single | inferred-named | local-branch
 }
 
-func Baseline(root string) (Base, error) {
-	if r, err := git(root, "remote", "get-url", "origin"); err == nil && r.ExitCode == 0 {
-		h, err := git(root, "symbolic-ref", "refs/remotes/origin/HEAD")
-		if err != nil {
-			return Base{}, err
-		}
-		if h.ExitCode != 0 {
-			return Base{}, errors.New("origin has no default branch; run: git remote set-head origin -a")
-		}
-		ref, branch, ok := ParseOriginHead(h.Stdout)
-		if !ok {
-			return Base{}, fmt.Errorf("cannot parse origin HEAD %q", h.Stdout)
-		}
-		s, err := git(root, "rev-parse", ref)
-		if err != nil || s.ExitCode != 0 {
-			return Base{}, fmt.Errorf("cannot resolve %s: %s", ref, s.Stderr)
-		}
-		return Base{Ref: ref, Branch: branch, SHA: s.Stdout}, nil
+// SelectRemote picks the remote the baseline comes from: "origin" when it
+// exists (git's own convention — every clone creates it), else the sole
+// remote, else the one named by the checkout.defaultRemote config. Several
+// remotes with no way to choose is an error, not a guess.
+func SelectRemote(root string) (string, bool, error) {
+	r, err := git(root, "remote")
+	if err != nil {
+		return "", false, err
 	}
-	b, err := git(root, "symbolic-ref", "--short", "HEAD")
+	if r.ExitCode != 0 {
+		return "", false, fmt.Errorf("git remote failed: %s", r.Stderr)
+	}
+	names := strings.Fields(r.Stdout)
+	if len(names) == 0 {
+		return "", false, nil
+	}
+	for _, n := range names {
+		if n == "origin" {
+			return "origin", true, nil
+		}
+	}
+	if len(names) == 1 {
+		return names[0], true, nil
+	}
+	if c, err := git(root, "config", "checkout.defaultRemote"); err == nil && c.ExitCode == 0 && c.Stdout != "" {
+		for _, n := range names {
+			if n == c.Stdout {
+				return n, true, nil
+			}
+		}
+	}
+	return "", true, fmt.Errorf("multiple remotes (%s) and none is origin; set checkout.defaultRemote or add an origin remote",
+		strings.Join(names, ", "))
+}
+
+// Baseline resolves the run's starting point. With a remote, the rules run
+// cheapest-first so common cases never touch the network:
+//  1. the local refs/remotes/<remote>/HEAD symref (present in cloned repos);
+//  2. one non-interactive, timeout-bounded ls-remote metadata query — the
+//     remote's authoritative default branch, for init-ed repos with working
+//     credentials (no objects are fetched; the SHA still comes from the
+//     local remote-tracking ref, as of the user's last fetch);
+//  3. offline inference from local remote-tracking refs: the sole branch,
+//     else the one named by init.defaultBranch, then main, then master.
+//
+// Without a remote, the current local branch is the baseline.
+func Baseline(root string) (Base, error) {
+	remote, hasRemote, err := SelectRemote(root)
 	if err != nil {
 		return Base{}, err
 	}
-	if b.ExitCode != 0 {
-		return Base{}, errors.New("HEAD is detached and there is no origin remote; check out a branch first")
+	if !hasRemote {
+		b, err := git(root, "symbolic-ref", "--short", "HEAD")
+		if err != nil {
+			return Base{}, err
+		}
+		if b.ExitCode != 0 {
+			return Base{}, errors.New("HEAD is detached and there is no remote; check out a branch first")
+		}
+		s, err := git(root, "rev-parse", "HEAD")
+		if err != nil || s.ExitCode != 0 {
+			return Base{}, errors.New("repository has no commits")
+		}
+		return Base{Ref: b.Stdout, Branch: b.Stdout, SHA: s.Stdout, Source: "local-branch"}, nil
 	}
-	s, err := git(root, "rev-parse", "HEAD")
-	if err != nil || s.ExitCode != 0 {
-		return Base{}, errors.New("repository has no commits")
+
+	trackingSHA := func(branch string) (string, bool) {
+		s, err := git(root, "rev-parse", "refs/remotes/"+remote+"/"+branch)
+		return s.Stdout, err == nil && s.ExitCode == 0
 	}
-	return Base{Ref: b.Stdout, Branch: b.Stdout, SHA: s.Stdout}, nil
+
+	// Rule 1: local <remote>/HEAD symref — cloned repos, zero network.
+	if h, err := git(root, "symbolic-ref", "refs/remotes/"+remote+"/HEAD"); err == nil && h.ExitCode == 0 {
+		if _, branch, ok := ParseRemoteHead(h.Stdout, remote); ok {
+			if sha, ok := trackingSHA(branch); ok {
+				return Base{Remote: remote, Ref: remote + "/" + branch, Branch: branch, SHA: sha,
+					Source: "remote-head-local"}, nil
+			}
+		}
+	}
+
+	// Rule 2: ask the remote — authoritative, but strictly optional.
+	if branch, ok := queryRemoteHead(root, remote); ok {
+		sha, found := trackingSHA(branch)
+		if !found {
+			return Base{}, fmt.Errorf("remote %s default branch is %q but it has not been fetched; run: git fetch %s",
+				remote, branch, remote)
+		}
+		return Base{Remote: remote, Ref: remote + "/" + branch, Branch: branch, SHA: sha, Source: "remote-query"}, nil
+	}
+
+	// Rule 3: offline inference from what was fetched previously.
+	if branch, source, ok := inferDefaultBranch(root, remote); ok {
+		if sha, found := trackingSHA(branch); found {
+			return Base{Remote: remote, Ref: remote + "/" + branch, Branch: branch, SHA: sha, Source: source}, nil
+		}
+	}
+
+	return Base{}, fmt.Errorf("cannot determine the default branch of remote %s; run: git fetch %s (or: git remote set-head %s -a)",
+		remote, remote, remote)
 }
 
-// ParseOriginHead maps "refs/remotes/origin/<branch>" to ("origin/<branch>", branch).
-func ParseOriginHead(sym string) (string, string, bool) {
-	const p = "refs/remotes/origin/"
+// ParseRemoteHead maps "refs/remotes/<remote>/<branch>" to ("<remote>/<branch>", branch).
+func ParseRemoteHead(sym, remote string) (string, string, bool) {
+	p := "refs/remotes/" + remote + "/"
 	if !strings.HasPrefix(sym, p) {
 		return "", "", false
 	}
 	branch := strings.TrimPrefix(sym, p)
-	return "origin/" + branch, branch, branch != ""
+	return remote + "/" + branch, branch, branch != ""
+}
+
+// queryRemoteHead runs the single metadata query. It must never prompt or
+// hang: terminal prompts and askpass are disabled, SSH runs in BatchMode
+// (unless the user configured their own transport), and the whole call is
+// timeout-bounded. Every failure — offline, no credentials, timeout — is
+// expected and reported as !ok, never as a fatal error.
+func queryRemoteHead(root, remote string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), baselineQueryTimeout)
+	defer cancel()
+	env := []string{"GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=true", "SSH_ASKPASS=true"}
+	if os.Getenv("GIT_SSH_COMMAND") == "" && os.Getenv("GIT_SSH") == "" {
+		env = append(env, "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
+	}
+	r, err := execx.RunCtx(ctx, root, env, "git", "ls-remote", "--symref", remote, "HEAD")
+	if err != nil || r.ExitCode != 0 {
+		return "", false
+	}
+	for _, line := range strings.Split(r.Stdout, "\n") {
+		if strings.HasPrefix(line, "ref: refs/heads/") {
+			f := strings.Fields(line) // ["ref:", "refs/heads/<branch>", "HEAD"]
+			if len(f) >= 2 {
+				branch := strings.TrimPrefix(f[1], "refs/heads/")
+				return branch, branch != ""
+			}
+		}
+	}
+	return "", false
+}
+
+// inferDefaultBranch guesses the default branch from the local
+// remote-tracking refs when the remote cannot be asked: unambiguous when
+// only one branch exists, otherwise the conventional names win.
+func inferDefaultBranch(root, remote string) (string, string, bool) {
+	r, err := git(root, "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"+remote)
+	if err != nil || r.ExitCode != 0 || r.Stdout == "" {
+		return "", "", false
+	}
+	var branches []string
+	for _, b := range strings.Split(r.Stdout, "\n") {
+		if b != "" && b != "HEAD" {
+			branches = append(branches, b)
+		}
+	}
+	if len(branches) == 1 {
+		return branches[0], "inferred-single", true
+	}
+	var candidates []string
+	if c, err := git(root, "config", "init.defaultBranch"); err == nil && c.ExitCode == 0 && c.Stdout != "" {
+		candidates = append(candidates, c.Stdout)
+	}
+	candidates = append(candidates, "main", "master")
+	for _, cand := range candidates {
+		for _, b := range branches {
+			if b == cand {
+				return b, "inferred-named", true
+			}
+		}
+	}
+	return "", "", false
 }
 
 // CloneNoCheckout makes the baseline template: full local clone without a

@@ -96,7 +96,7 @@ func Execute(o Options) int {
 	if err != nil {
 		return fail(err)
 	}
-	s.console.Check(fmt.Sprintf("baseline %s (%.7s)", s.base.Ref, s.base.SHA))
+	s.console.Check(fmt.Sprintf("baseline %s (%.7s, %s)", s.base.Ref, s.base.SHA, s.base.Source))
 
 	s.id = NewRunID(time.Now())
 	if s.o.Branch == "" {

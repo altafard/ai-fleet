@@ -8,12 +8,16 @@ import (
 	"testing"
 )
 
-func TestParseOriginHead(t *testing.T) {
-	ref, branch, ok := ParseOriginHead("refs/remotes/origin/main")
+func TestParseRemoteHead(t *testing.T) {
+	ref, branch, ok := ParseRemoteHead("refs/remotes/origin/main", "origin")
 	if !ok || ref != "origin/main" || branch != "main" {
 		t.Fatalf("got %q %q %v", ref, branch, ok)
 	}
-	if _, _, ok := ParseOriginHead("garbage"); ok {
+	ref, branch, ok = ParseRemoteHead("refs/remotes/upstream/trunk", "upstream")
+	if !ok || ref != "upstream/trunk" || branch != "trunk" {
+		t.Fatalf("got %q %q %v", ref, branch, ok)
+	}
+	if _, _, ok := ParseRemoteHead("garbage", "origin"); ok {
 		t.Fatal("want !ok")
 	}
 }
@@ -185,8 +189,118 @@ func TestBaselineLocal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Branch != "main" || b.Ref != "main" || len(b.SHA) != 40 {
+	if b.Branch != "main" || b.Ref != "main" || len(b.SHA) != 40 || b.Source != "local-branch" {
 		t.Fatalf("got %+v", b)
+	}
+}
+
+func TestSelectRemote(t *testing.T) {
+	root := initRepo(t)
+	if _, has, err := SelectRemote(root); has || err != nil {
+		t.Fatalf("no remotes: has=%v err=%v", has, err)
+	}
+	runGit(t, root, "remote", "add", "upstream", "/nowhere/a")
+	if name, has, err := SelectRemote(root); !has || err != nil || name != "upstream" {
+		t.Fatalf("sole remote: %q %v %v", name, has, err)
+	}
+	runGit(t, root, "remote", "add", "fork", "/nowhere/b")
+	if _, _, err := SelectRemote(root); err == nil {
+		t.Fatal("ambiguous remotes must error")
+	}
+	runGit(t, root, "config", "checkout.defaultRemote", "fork")
+	if name, _, err := SelectRemote(root); err != nil || name != "fork" {
+		t.Fatalf("checkout.defaultRemote: %q %v", name, err)
+	}
+	runGit(t, root, "remote", "add", "origin", "/nowhere/c")
+	if name, _, err := SelectRemote(root); err != nil || name != "origin" {
+		t.Fatalf("origin must win: %q %v", name, err)
+	}
+}
+
+// TestBaselineRemoteHeadLocal covers rule 1: a cloned repo carries the
+// refs/remotes/origin/HEAD symref, so resolution is local-only.
+func TestBaselineRemoteHeadLocal(t *testing.T) {
+	upstream := initRepo(t)
+	clone := filepath.Join(t.TempDir(), "clone")
+	runGit(t, t.TempDir(), "clone", "-q", upstream, clone)
+	b, err := Baseline(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Ref != "origin/main" || b.Branch != "main" || b.Source != "remote-head-local" {
+		t.Fatalf("got %+v", b)
+	}
+}
+
+// TestBaselineRemoteQuery covers rule 2: remote added by hand (no
+// origin/HEAD symref), remote reachable — a local-path remote stands in
+// for the network, so ls-remote works without credentials.
+func TestBaselineRemoteQuery(t *testing.T) {
+	upstream := initRepo(t) // default branch "main"
+	root := initRepo(t)
+	runGit(t, root, "remote", "add", "origin", upstream)
+	runGit(t, root, "fetch", "-q", "origin")
+	// Recent git may set origin/HEAD on first fetch; remove it so this test
+	// deterministically exercises the query rule, not the symref rule.
+	cmd := exec.Command("git", "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	cmd.Dir = root
+	cmd.Run() // ignore error: symref may legitimately not exist on older git
+	b, err := Baseline(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Ref != "origin/main" || b.Source != "remote-query" {
+		t.Fatalf("got %+v", b)
+	}
+}
+
+// TestBaselineRemoteQueryUnfetched: the query names the default branch but
+// no remote-tracking ref exists locally — actionable error, no guessing.
+func TestBaselineRemoteQueryUnfetched(t *testing.T) {
+	upstream := initRepo(t)
+	root := initRepo(t)
+	runGit(t, root, "remote", "add", "origin", upstream)
+	_, err := Baseline(root)
+	if err == nil || !strings.Contains(err.Error(), "git fetch origin") {
+		t.Fatalf("want fetch hint, got %v", err)
+	}
+}
+
+// TestBaselineInferred covers rule 3: remote unreachable, resolution falls
+// back to local remote-tracking refs.
+func TestBaselineInferred(t *testing.T) {
+	root := initRepo(t)
+	sha := runGit(t, root, "rev-parse", "HEAD")
+	runGit(t, root, "remote", "add", "origin", filepath.Join(t.TempDir(), "gone"))
+
+	runGit(t, root, "update-ref", "refs/remotes/origin/trunk", sha)
+	b, err := Baseline(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Ref != "origin/trunk" || b.Source != "inferred-single" {
+		t.Fatalf("single: got %+v", b)
+	}
+
+	runGit(t, root, "config", "init.defaultBranch", "main")
+	runGit(t, root, "update-ref", "refs/remotes/origin/main", sha)
+	b, err = Baseline(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Ref != "origin/main" || b.Source != "inferred-named" {
+		t.Fatalf("named: got %+v", b)
+	}
+}
+
+// TestBaselineNoInformation: remote unreachable and nothing fetched — the
+// error carries both remedies.
+func TestBaselineNoInformation(t *testing.T) {
+	root := initRepo(t)
+	runGit(t, root, "remote", "add", "origin", filepath.Join(t.TempDir(), "gone"))
+	_, err := Baseline(root)
+	if err == nil || !strings.Contains(err.Error(), "git fetch origin") {
+		t.Fatalf("want error with fetch hint, got %v", err)
 	}
 }
 
