@@ -16,5 +16,5 @@ promise until v1.0.0.
 A release is just an annotated tag on `main` — no CI, no changelog file
 (the commit history is the changelog):
 
-    git tag vX.Y.Z
+    git tag -a vX.Y.Z -m "vX.Y.Z"
     git push origin vX.Y.Z
