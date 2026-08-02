@@ -27,24 +27,134 @@ func TestRedact(t *testing.T) {
 	}
 }
 
+// runGit runs a git command in dir with a deterministic identity, failing
+// the test on error. Used for test-repo setup (commits, pushes) that the
+// package's own git() helper cannot do without an author identity.
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %s", args, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func initRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	env := append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir, cmd.Env = dir, env
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %s", args, out)
-		}
-	}
-	run("init", "-q", "-b", "main")
+	runGit(t, dir, "init", "-q", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\n"), 0o644)
-	run("add", ".")
-	run("commit", "-q", "-m", "chore: init")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-q", "-m", "chore: init")
 	return dir
+}
+
+func commitFile(t *testing.T, dir, name, content, msg string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-q", "-m", msg)
+	return runGit(t, dir, "rev-parse", "HEAD")
+}
+
+// TestPushSuccess pushes a local branch to a local bare repo (no network)
+// and asserts the branch lands there.
+func TestPushSuccess(t *testing.T) {
+	src := initRepo(t)
+	runGit(t, src, "checkout", "-q", "-b", "feature/x")
+	commitFile(t, src, "feature.txt", "hi\n", "feat: add feature file")
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	runGit(t, t.TempDir(), "init", "-q", "--bare", bare)
+
+	if err := Push(src, bare, "feature/x", ""); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	r, err := git(bare, "show-ref", "--verify", "--quiet", "refs/heads/feature/x")
+	if err != nil || r.ExitCode != 0 {
+		t.Fatalf("branch feature/x missing in bare repo: err=%v exitCode=%d stderr=%s", err, r.ExitCode, r.Stderr)
+	}
+}
+
+// TestPushRejectedNonFastForward diverges the bare repo's branch from the
+// local one (by pushing an unrelated commit from a second clone) and asserts
+// Push reports an error for the resulting non-fast-forward push.
+func TestPushRejectedNonFastForward(t *testing.T) {
+	src := initRepo(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	runGit(t, t.TempDir(), "init", "-q", "--bare", bare)
+
+	if err := Push(src, bare, "main", ""); err != nil {
+		t.Fatalf("initial push failed: %v", err)
+	}
+
+	// Diverge the bare repo's main from src's main via a second clone.
+	other := filepath.Join(t.TempDir(), "other")
+	runGit(t, t.TempDir(), "clone", "-q", bare, other)
+	commitFile(t, other, "other.txt", "x\n", "chore: other change")
+	runGit(t, other, "push", "-q", "origin", "main")
+
+	// src's main is now behind bare's main; a new, divergent local commit
+	// makes this a non-fast-forward push.
+	commitFile(t, src, "srconly.txt", "y\n", "chore: src change")
+
+	if err := Push(src, bare, "main", ""); err == nil {
+		t.Fatal("want error for non-fast-forward push, got nil")
+	}
+}
+
+// TestPushRedactsToken forces a push failure against a URL that embeds a
+// fake token and asserts the token never appears in the returned error.
+func TestPushRedactsToken(t *testing.T) {
+	src := initRepo(t)
+	const token = "sekret-token-value"
+	badURL := filepath.Join(t.TempDir(), token, "does-not-exist.git")
+
+	err := Push(src, badURL, "main", token)
+	if err == nil {
+		t.Fatal("want error pushing to a nonexistent repository")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("token leaked in error: %q", err.Error())
+	}
+}
+
+// TestFetchBundle creates a bundle from a temp repo and fetches it into a
+// clone that already has the baseline commit, mirroring collect()'s use.
+func TestFetchBundle(t *testing.T) {
+	src := initRepo(t)
+	b, err := Baseline(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, src, "extra.txt", "extra\n", "feat: add extra file")
+
+	bundle := filepath.Join(t.TempDir(), "test.bundle")
+	runGit(t, src, "bundle", "create", bundle, b.SHA+"..main")
+
+	dest := filepath.Join(t.TempDir(), "dest")
+	if err := CloneNoCheckout(src, dest, b.SHA); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := FetchBundle(dest, bundle, "main"); err != nil {
+		t.Fatalf("FetchBundle failed: %v", err)
+	}
+	n, err := CountCommits(dest, b.SHA, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("got %d commits after fetch, want 1", n)
+	}
 }
 
 func TestRepoRootFromSubdir(t *testing.T) {
