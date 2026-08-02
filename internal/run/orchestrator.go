@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/altafard/ai-fleet/internal/execx"
 	"github.com/altafard/ai-fleet/internal/gitx"
 	"github.com/altafard/ai-fleet/internal/logstream"
+	"github.com/altafard/ai-fleet/internal/provider"
 	"github.com/altafard/ai-fleet/internal/runner"
 	"golang.org/x/term"
 )
@@ -335,8 +337,41 @@ func collect(s *state, containerExit int) int {
 	return code
 }
 
-// publish is implemented in a later task.
-func publish(s *state) error { return fmt.Errorf("publish not implemented") }
+// publish runs only for successful runs with commits (enforced by collect).
+// Order matters: validate pull-request.md BEFORE pushing, so a composition
+// failure leaves nothing on the remote. No fallback composition (spec).
+func publish(s *state) error {
+	title, body, err := ParsePRFile(s.dir.PRFile())
+	if err != nil {
+		return err
+	}
+	s.console.Check("PR composed: " + title)
+
+	p, err := provider.New(s.o.GitProvider)
+	if err != nil {
+		return err
+	}
+	pushURL, err := p.PushURL(s.o.GitRepository, s.o.GitToken)
+	if err != nil {
+		return err
+	}
+	// The bundle was already fetched into worktree/ by collect.
+	if err := gitx.Push(s.dir.Worktree(), pushURL, s.o.Branch, s.o.GitToken); err != nil {
+		return err
+	}
+	s.console.Check("pushed " + s.o.Branch)
+
+	url, err := p.CreatePR(http.DefaultClient, s.o.GitRepository, s.o.GitToken, provider.PR{
+		Title: title, Body: body, Head: s.o.Branch, Base: s.base.Branch,
+	})
+	if err != nil {
+		return err
+	}
+	s.prURL = url
+	s.console.Check("pull request created: " + url)
+	fmt.Println("Pull request:", url)
+	return nil
+}
 
 // fatal reports a run failure. The log-file pointer only makes sense once
 // the container's stream exists.
