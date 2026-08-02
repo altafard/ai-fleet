@@ -168,7 +168,9 @@ func queryRemoteHead(root, remote string) (string, bool) {
 	if os.Getenv("GIT_SSH_COMMAND") == "" && os.Getenv("GIT_SSH") == "" {
 		env = append(env, "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
 	}
-	r, err := execx.RunCtx(ctx, root, env, "git", "ls-remote", "--symref", remote, "HEAD")
+	// -c credential.helper= disables configured helpers (a GUI helper could
+	// otherwise prompt and hang despite GIT_TERMINAL_PROMPT=0).
+	r, err := execx.RunCtx(ctx, root, env, "git", "-c", "credential.helper=", "ls-remote", "--symref", remote, "HEAD")
 	if err != nil || r.ExitCode != 0 {
 		return "", false
 	}
@@ -256,11 +258,21 @@ func CountCommits(dir, from, to string) (int, error) {
 	return strconv.Atoi(r.Stdout)
 }
 
-// Push pushes branch to url. url may embed a token — the caller passes the
-// token so errors can be redacted here, the only place that sees git output.
+// Push pushes branch to url, authenticating via an inline credential helper
+// that reads the token from the child's environment — the token never
+// appears in process argv (visible in `ps`) or in the URL. Errors are still
+// redacted defensively.
 func Push(dir, url, branch, token string) error {
-	if r, err := git(dir, "push", url, branch+":"+branch); err != nil || r.ExitCode != 0 {
-		return errors.New(Redact("push failed: "+r.Stderr, token))
+	const helper = `credential.helper=!f() { echo "username=x-access-token"; echo "password=${AI_FLEET_PUSH_TOKEN}"; }; f`
+	env := []string{"AI_FLEET_PUSH_TOKEN=" + token, "GIT_TERMINAL_PROMPT=0"}
+	r, err := execx.RunCtx(context.Background(), dir, env,
+		"git", "-c", "credential.helper=", "-c", helper, "push", url, branch+":"+branch)
+	if err != nil || r.ExitCode != 0 {
+		msg := r.Stderr
+		if msg == "" && err != nil {
+			msg = err.Error()
+		}
+		return errors.New(Redact("push failed: "+msg, token))
 	}
 	return nil
 }

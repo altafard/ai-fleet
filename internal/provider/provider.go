@@ -19,7 +19,9 @@ type PR struct {
 // Provider adapts one git-hosting API: a push URL for a repository and
 // pull-request creation.
 type Provider interface {
-	// PushURL returns the token-authenticated push URL for the repository.
+	// PushURL returns a credential-free push URL for the repository; the
+	// token authenticates elsewhere (an environment-backed credential
+	// helper), never inside the URL.
 	PushURL(repo, token string) (string, error)
 	// CreatePR opens the pull request and returns its URL.
 	CreatePR(client *http.Client, repo, token string, pr PR) (string, error)

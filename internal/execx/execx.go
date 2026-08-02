@@ -7,11 +7,23 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// waitDelay bounds how long Wait keeps waiting for I/O after the context is
+// done or the process exits — without it, a lingering descendant (ssh, a
+// credential helper) that inherited the pipe keeps Wait blocked forever.
+const waitDelay = 3 * time.Second
+
+// maxStreamLine caps a single output line in Stream. Claude stream-json
+// events embed whole tool results, so the cap is generous. Overridable in
+// tests.
+var maxStreamLine = 64 * 1024 * 1024
 
 // Result captures a finished subprocess: whitespace-trimmed stdout and
 // stderr, and the exit code (zero unless the process ran and failed).
@@ -33,6 +45,7 @@ func Run(dir, name string, args ...string) (Result, error) {
 func RunCtx(ctx context.Context, dir string, env []string, name string, args ...string) (Result, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	cmd.WaitDelay = waitDelay
 	if env != nil {
 		cmd.Env = append(os.Environ(), env...)
 	}
@@ -45,6 +58,11 @@ func RunCtx(ctx context.Context, dir string, env []string, name string, args ...
 		res.ExitCode = ee.ExitCode()
 		return res, nil
 	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// Process exited but a descendant held the pipe open past the grace
+		// window; the captured output is still valid.
+		return res, nil
+	}
 	return res, err
 }
 
@@ -54,6 +72,7 @@ func Stream(ctx context.Context, dir string, env []string, onLine func(string), 
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
+	cmd.WaitDelay = waitDelay
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw
 	if err := cmd.Start(); err != nil {
@@ -61,17 +80,26 @@ func Stream(ctx context.Context, dir string, env []string, onLine func(string), 
 		return -1, err
 	}
 	done := make(chan struct{})
+	var scanErr error
 	go func() {
 		sc := bufio.NewScanner(pr)
-		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		sc.Buffer(make([]byte, 0, 64*1024), maxStreamLine)
 		for sc.Scan() {
 			onLine(sc.Text())
 		}
+		scanErr = sc.Err()
+		// Keep draining even after a scan error (e.g. a line beyond the cap):
+		// the process's writer must never block on a dead reader, or
+		// cmd.Wait below would deadlock forever.
+		io.Copy(io.Discard, pr)
 		close(done)
 	}()
 	err := cmd.Wait()
 	pw.Close()
 	<-done
+	if scanErr != nil {
+		return -1, fmt.Errorf("output stream: %w", scanErr)
+	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return ee.ExitCode(), nil

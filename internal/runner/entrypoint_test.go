@@ -146,7 +146,10 @@ func TestEntrypointClaudeFailureStillSalvages(t *testing.T) {
 	bundleHasBranch(t, filepath.Join(out, "run.bundle"))
 }
 
-func TestEntrypointSalvageErrorPreservesExitCode(t *testing.T) {
+// TestEntrypointBundleWriteFailureExitsDistinct: commits that cannot be
+// bundled must never masquerade as a clean no-change run — the entrypoint
+// exits 86 so the host reports a failure instead of "no changes".
+func TestEntrypointBundleWriteFailureExitsDistinct(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("cannot test permissions as root")
 	}
@@ -154,11 +157,29 @@ func TestEntrypointSalvageErrorPreservesExitCode(t *testing.T) {
 	os.Chmod(out, 0o555)
 	t.Cleanup(func() { os.Chmod(out, 0o755) })
 	stdout, code := run()
-	if code != 0 {
-		t.Fatalf("exit=%d want 0 (claude success, not salvage error)\n%s", code, stdout)
+	if code != 86 {
+		t.Fatalf("exit=%d want 86 (commits made, bundle unwritable)\n%s", code, stdout)
+	}
+	if !strings.Contains(stdout, "failed to write") {
+		t.Fatalf("want bundle-failure notice on stdout\n%s", stdout)
 	}
 	if _, err := os.Stat(filepath.Join(out, "run.bundle")); err == nil {
 		t.Fatal("bundle must not exist with read-only out dir")
+	}
+}
+
+// TestEntrypointBundleWriteFailureKeepsClaudeExit: when claude itself failed,
+// its exit code wins over the bundle-failure code.
+func TestEntrypointBundleWriteFailureKeepsClaudeExit(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("cannot test permissions as root")
+	}
+	run, out, _ := harness(t, "commit", "7")
+	os.Chmod(out, 0o555)
+	t.Cleanup(func() { os.Chmod(out, 0o755) })
+	stdout, code := run()
+	if code != 7 {
+		t.Fatalf("exit=%d want 7 (claude failure stays visible)\n%s", code, stdout)
 	}
 }
 

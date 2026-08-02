@@ -2,8 +2,10 @@ package execx
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunCaptures(t *testing.T) {
@@ -41,6 +43,41 @@ func TestRunCtxEnvPassthrough(t *testing.T) {
 	}
 	if !strings.HasPrefix(r.Stdout, "ctx-test ") {
 		t.Fatalf("env not passed through: %q", r.Stdout)
+	}
+}
+
+// TestStreamTooLongLineDoesNotHang: a line beyond the cap must fail fast
+// with an error, never deadlock cmd.Wait (the historical failure mode).
+func TestStreamTooLongLineDoesNotHang(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	old := maxStreamLine
+	maxStreamLine = 1024
+	t.Cleanup(func() { maxStreamLine = old })
+	start := time.Now()
+	_, err := Stream(context.Background(), "", nil, func(string) {},
+		"bash", "-c", "printf 'a%.0s' {1..100000}; echo; echo done")
+	if err == nil {
+		t.Fatal("want error for over-long line")
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("stream took %v — reader stopped draining", d)
+	}
+}
+
+// TestRunCtxBoundedWithLingeringChild: a descendant that inherits the pipe
+// and outlives the command must not keep RunCtx blocked past WaitDelay.
+func TestRunCtxBoundedWithLingeringChild(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	RunCtx(ctx, "", nil, "bash", "-c", "sleep 30 & sleep 30")
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("RunCtx not bounded: took %v", d)
 	}
 }
 

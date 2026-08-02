@@ -323,6 +323,11 @@ func gitVersion() (string, error) {
 	return strings.TrimPrefix(r.Stdout, "git version "), nil
 }
 
+// bundleFailedExit mirrors the entrypoint's contract: commits were made but
+// the bundle could not be written to /out. It must never be reported as a
+// clean no-change run.
+const bundleFailedExit = 86
+
 // collect verifies the bundle, counts commits and prints merge instructions.
 // containerExit is the entrypoint's (claude's) exit code.
 func collect(s *state, containerExit int) int {
@@ -331,6 +336,9 @@ func collect(s *state, containerExit int) int {
 	if _, err := os.Stat(s.dir.BundleFile()); err != nil {
 		// No bundle: either a clean no-change run or a failure without salvage.
 		deleteWorktree()
+		if containerExit == bundleFailedExit {
+			return fatal(s, fmt.Errorf("the run made commits but the container could not write out/run.bundle (is the out/ directory writable by the container user?) — the commits were lost with the container"))
+		}
 		if containerExit == 0 {
 			s.console.Check("run finished: no changes")
 			return ExitNoChanges
@@ -355,9 +363,14 @@ func collect(s *state, containerExit int) int {
 
 	code := ExitOK
 	if containerExit != 0 {
-		// Salvaged bundle from a failed run: keep it, report failure, no PR.
+		// Salvaged bundle from a failed run: keep it, report failure, no PR —
+		// and tell the user exactly where the recovered work is.
 		code = ExitFailure
 		s.console.Fail(fmt.Sprintf("run failed (exit %d) but %d commits were salvaged into the bundle", containerExit, n))
+		rel := s.dir.Rel(s.root)
+		fmt.Fprintf(os.Stderr, "Salvaged bundle: %s/out/run.bundle\n", rel)
+		fmt.Fprintf(os.Stderr, "Fetch:  git fetch %s/out/run.bundle %s:%s\n", rel, s.o.Branch, s.o.Branch)
+		fmt.Fprintln(os.Stderr, "See", s.dir.LogFile())
 	} else if s.o.PRMode() {
 		if err := publish(s); err != nil {
 			deleteWorktree()

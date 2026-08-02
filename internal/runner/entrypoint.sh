@@ -8,7 +8,10 @@ OUT="${FLEET_OUT_DIR:-/out}"
 
 # The entrypoint is deliberately silent: claude is the only process writing
 # to stdout, and the host streams that verbatim into out/log.jsonl. The run
-# outcome is carried by the exit code and the presence of run.bundle.
+# outcome is carried by the exit code and the presence of run.bundle, with
+# one hard rule: commits that exist but could not be bundled must NEVER look
+# like a clean no-change run — that combination exits 86 (the host treats it
+# as a run failure, not "no changes").
 finish() {
   status=$?
   set +e
@@ -20,7 +23,12 @@ finish() {
     fi
     count=$(git rev-list --count "$FLEET_BASELINE_SHA..$FLEET_BRANCH" 2>/dev/null || echo 0)
     if [ "$count" -gt 0 ]; then
-      git bundle create "$OUT/run.bundle" "$FLEET_BASELINE_SHA..$FLEET_BRANCH" >/dev/null 2>&1
+      if ! git bundle create "$OUT/run.bundle" "$FLEET_BASELINE_SHA..$FLEET_BRANCH" >/dev/null 2>&1; then
+        echo "ai-fleet-entrypoint: failed to write $OUT/run.bundle ($count commits at risk)"
+        # Only claim the exit code when claude itself succeeded — a claude
+        # failure stays visible in the code either way.
+        if [ "$status" -eq 0 ]; then status=86; fi
+      fi
     fi
   fi
   exit "$status"

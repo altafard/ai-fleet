@@ -24,12 +24,16 @@ func (g *GitHub) parseRepo(repo string) (string, string, error) {
 	return m[1], m[2], nil
 }
 
+// PushURL returns a credential-free push URL. The token is deliberately NOT
+// embedded: it would end up in `git push` argv, visible to any local user
+// via ps. Authentication happens in gitx.Push through an environment-backed
+// credential helper instead.
 func (g *GitHub) PushURL(repo, token string) (string, error) {
 	owner, name, err := g.parseRepo(repo)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, owner, name), nil
+	return fmt.Sprintf("https://github.com/%s/%s.git", owner, name), nil
 }
 
 // CreatePR opens a pull request on repo and returns its HTML URL. A

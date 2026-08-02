@@ -20,14 +20,17 @@ func TestNew(t *testing.T) {
 func TestGitHubPushURL(t *testing.T) {
 	gh := &GitHub{}
 	cases := []struct{ repo, want string }{
-		{"owner/repo", "https://x-access-token:tok@github.com/owner/repo.git"},
-		{"https://github.com/owner/repo", "https://x-access-token:tok@github.com/owner/repo.git"},
-		{"https://github.com/owner/repo.git", "https://x-access-token:tok@github.com/owner/repo.git"},
+		{"owner/repo", "https://github.com/owner/repo.git"},
+		{"https://github.com/owner/repo", "https://github.com/owner/repo.git"},
+		{"https://github.com/owner/repo.git", "https://github.com/owner/repo.git"},
 	}
 	for _, c := range cases {
 		got, err := gh.PushURL(c.repo, "tok")
 		if err != nil || got != c.want {
 			t.Errorf("%q: got %q err %v", c.repo, got, err)
+		}
+		if strings.Contains(got, "tok") {
+			t.Errorf("%q: token must never be embedded in the push URL: %q", c.repo, got)
 		}
 	}
 	if _, err := gh.PushURL("not a repo", "tok"); err == nil {
