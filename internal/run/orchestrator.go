@@ -123,6 +123,18 @@ func Execute(o Options) int {
 // the signal or what that phase's own return code was, runPhases reports
 // ExitInterrupted once a signal has been observed.
 func runPhases(s *state) (code int) {
+	// worktree/ is a disposable template; delete it on every exit path
+	// (success or failure) regardless of which phase returned. Phases that
+	// already delete it earlier (collect, publish ordering) make this a
+	// harmless no-op — os.RemoveAll on a missing path returns nil. Guarded:
+	// before the run dir exists, s.dir is the zero value and its Worktree()
+	// would be a relative path.
+	defer func() {
+		if s.dir.Root() != "" {
+			_ = os.RemoveAll(s.dir.Worktree())
+		}
+	}()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -150,6 +162,17 @@ func runPhases(s *state) (code int) {
 				fmt.Fprintln(os.Stderr, "ai-fleet: docker stop failed:", err)
 			}
 		}
+		// Second Ctrl-C: immediate kill, no salvage. Keep watching sigCh so a
+		// repeated signal is never silently dropped into the buffered channel
+		// while nobody is listening (which would otherwise make the process
+		// unkillable short of SIGKILL).
+		select {
+		case <-sigCh:
+			fmt.Fprintln(os.Stderr, "ai-fleet: second interrupt received, exiting immediately")
+			os.Exit(ExitInterrupted)
+		case <-done:
+			return
+		}
 	}()
 
 	defer func() {
@@ -169,14 +192,25 @@ func runPhases(s *state) (code int) {
 	tag := dockerx.ImageTag(df)
 	s.console.Spin("building image")
 	buildStart := time.Now()
+	var buildTail []string
+	const buildTailMax = 10
 	s.imageID, err = dockerx.Build(ctx, s.o.Dockerfile, filepath.Dir(s.o.Dockerfile), tag,
 		func(line string) {
 			if step, total, instr, ok := logstream.ParseBuildStep(line); ok {
 				s.console.Spin(fmt.Sprintf("building image — step %d/%d: %s", step, total, instr))
 			}
+			buildTail = append(buildTail, line)
+			if len(buildTail) > buildTailMax {
+				buildTail = buildTail[len(buildTail)-buildTailMax:]
+			}
 		})
 	if err != nil {
-		code = fatal(s, err)
+		s.console.Fail(err.Error())
+		fmt.Fprintln(os.Stderr)
+		for _, l := range buildTail {
+			fmt.Fprintln(os.Stderr, "  "+l)
+		}
+		code = ExitFailure
 		return
 	}
 	s.console.Done(fmt.Sprintf("image built in %s", time.Since(buildStart).Round(time.Second)))
@@ -361,7 +395,8 @@ func publish(s *state) error {
 	}
 	s.console.Check("pushed " + s.o.Branch)
 
-	url, err := p.CreatePR(http.DefaultClient, s.o.GitRepository, s.o.GitToken, provider.PR{
+	client := &http.Client{Timeout: 30 * time.Second}
+	url, err := p.CreatePR(client, s.o.GitRepository, s.o.GitToken, provider.PR{
 		Title: title, Body: body, Head: s.o.Branch, Base: s.base.Branch,
 	})
 	if err != nil {
