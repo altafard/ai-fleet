@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -40,7 +41,7 @@ type state struct {
 	imageID   string
 	commits   int
 	turns     int // claude assistant turns, for the progress spinner
-	stopped   bool
+	stopped   atomic.Bool
 	prURL     string
 	startedAt time.Time
 }
@@ -112,19 +113,56 @@ func Execute(o Options) int {
 	return code
 }
 
-// runPhases runs the phases in sequence. On Ctrl-C / SIGTERM the container
-// — if one is running — is asked to stop gracefully so the entrypoint's
-// trap can salvage a bundle, and the run reports ExitInterrupted.
-func runPhases(s *state) int {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+// runPhases installs one signal watcher covering every phase (build, clone,
+// container run, collect) and runs them in sequence. On the first Ctrl-C /
+// SIGTERM: the build context is cancelled (aborting dockerx.Build), and the
+// container — if one has been started — is asked to stop gracefully so the
+// entrypoint's trap can salvage a bundle. Regardless of which phase caught
+// the signal or what that phase's own return code was, runPhases reports
+// ExitInterrupted once a signal has been observed.
+func runPhases(s *state) (code int) {
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	// done unblocks the watcher goroutine on normal completion: signal.Stop
+	// only stops future relaying, it does not close sigCh.
+	done := make(chan struct{})
+	defer close(done)
+
+	var containerName atomic.Value // string; unset until the container starts
+
+	go func() {
+		select {
+		case <-sigCh:
+		case <-done:
+			return
+		}
+		s.stopped.Store(true)
+		cancel()
+		if name, ok := containerName.Load().(string); ok && name != "" {
+			if err := dockerx.Stop(name); err != nil {
+				fmt.Fprintln(os.Stderr, "ai-fleet: docker stop failed:", err)
+			}
+		}
+	}()
+
+	defer func() {
+		if s.stopped.Load() {
+			code = ExitInterrupted
+		}
+	}()
 
 	// --- Phase 2: image build (console-only: docker output drives the
 	// spinner and, on failure, the printed tail — it is not logged). Runs
 	// before anything is created on disk: a failed build leaves no run dir. ---
 	df, err := os.ReadFile(s.o.Dockerfile)
 	if err != nil {
-		return fatal(s, err)
+		code = fatal(s, err)
+		return
 	}
 	tag := dockerx.ImageTag(df)
 	s.console.Spin("building image")
@@ -136,43 +174,51 @@ func runPhases(s *state) int {
 			}
 		})
 	if err != nil {
-		return fatal(s, err)
+		code = fatal(s, err)
+		return
 	}
 	s.console.Done(fmt.Sprintf("image built in %s", time.Since(buildStart).Round(time.Second)))
 
 	// --- Phase 3: run snapshot — the run dir exists only from here on ---
 	s.dir, err = CreateRunDir(s.root, s.id)
 	if err != nil {
-		return fatal(s, err)
+		code = fatal(s, err)
+		return
 	}
 	if err := gitx.CloneNoCheckout(s.root, s.dir.Worktree(), s.base.SHA); err != nil {
-		return fatal(s, err)
+		code = fatal(s, err)
+		return
 	}
 	s.console.Check("baseline clone created")
 	task := s.o.Prompt
 	if s.o.PromptFile != "" {
 		b, err := os.ReadFile(s.o.PromptFile)
 		if err != nil {
-			return fatal(s, err)
+			code = fatal(s, err)
+			return
 		}
 		task = string(b)
 	}
 	prompt, err := runner.RenderPrompt(s.o.Branch, task)
 	if err != nil {
-		return fatal(s, err)
+		code = fatal(s, err)
+		return
 	}
 	if err := os.WriteFile(s.dir.PromptFile(), []byte(prompt), 0o644); err != nil {
-		return fatal(s, err)
+		code = fatal(s, err)
+		return
 	}
 	if err := os.WriteFile(s.dir.EntrypointFile(), runner.EntrypointScript(), 0o755); err != nil {
-		return fatal(s, err)
+		code = fatal(s, err)
+		return
 	}
 
 	// --- Phase 4+5: container run (entrypoint acts inside; its stdout —
 	// claude's stream-json — is written verbatim to out/log.jsonl) ---
 	s.logFile, err = os.Create(s.dir.LogFile())
 	if err != nil {
-		return fatal(s, err)
+		code = fatal(s, err)
+		return
 	}
 	defer s.logFile.Close()
 
@@ -190,22 +236,18 @@ func runPhases(s *state) int {
 		"FLEET_BRANCH=" + s.o.Branch, "FLEET_BASELINE_SHA=" + s.base.SHA,
 	}
 	args := dockerx.RunArgs(tag, name, mounts, envKeys, []string{"bash", "/source/entrypoint.sh"})
+	// Set before starting the container so a signal arriving during startup
+	// can never race the watcher goroutine into skipping the stop.
+	containerName.Store(name)
 	s.console.Spin("container running")
 
-	// First Ctrl-C: graceful docker stop so the entrypoint trap can salvage.
-	go func() {
-		<-ctx.Done()
-		if ctx.Err() != nil {
-			s.stopped = true
-			dockerx.Stop(name)
-		}
-	}()
 	exit, err := dockerx.RunContainer(context.Background(), args, env, func(line string) {
 		s.logFile.WriteString(line + "\n")
 		s.spinClaude(line)
 	})
 	if err != nil {
-		return fatal(s, err)
+		code = fatal(s, err)
+		return
 	}
 	if exit == 0 {
 		s.console.Done("container exited")
@@ -213,12 +255,11 @@ func runPhases(s *state) int {
 		s.console.Fail(fmt.Sprintf("container exited with code %d", exit))
 	}
 
-	// --- Phase 6: collect ---
-	code := collect(s, exit)
-	if s.stopped {
-		return ExitInterrupted
-	}
-	return code
+	// --- Phase 6: collect (salvage semantics preserved: collect still runs
+	// even when the container was stopped by a signal, so a bundle salvaged
+	// by the entrypoint's trap is still verified and reported) ---
+	code = collect(s, exit)
+	return
 }
 
 // spinClaude derives spinner progress from one line of the container's
