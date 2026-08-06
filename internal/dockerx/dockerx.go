@@ -112,6 +112,17 @@ func Stop(name string) error {
 	return nil
 }
 
+// RemoveForce kills and removes the named container (docker rm -f). This
+// is the second-interrupt path: salvage is deliberately abandoned, so the
+// container gets SIGKILL, not a grace period.
+func RemoveForce(name string) error {
+	r, err := execx.Run("", "docker", "rm", "-f", name)
+	if err != nil || r.ExitCode != 0 {
+		return fmt.Errorf("docker rm -f failed: %s", execx.Cause(r, err))
+	}
+	return nil
+}
+
 // ListTags returns the tags currently present for one image repository.
 func ListTags(repo string) ([]string, error) {
 	r, err := execx.Run("", "docker", "images", repo, "--format", "{{.Tag}}")

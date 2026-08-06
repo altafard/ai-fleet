@@ -69,6 +69,7 @@ func TestErrorsKeepCauseWhenDockerCannotRun(t *testing.T) {
 		call func() error
 	}{
 		{"Stop", func() error { return Stop("ai-fleet-x") }},
+		{"RemoveForce", func() error { return RemoveForce("ai-fleet-x") }},
 		{"ListTags", func() error { _, err := ListTags("ai-fleet/x"); return err }},
 	}
 	for _, tc := range cases {
