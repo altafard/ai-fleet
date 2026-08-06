@@ -36,10 +36,12 @@ func ProjectName(root string) string {
 }
 
 // ProjectHash disambiguates same-named projects on one machine: the first
-// 8 hex chars of SHA-256 of the absolute repo-root path.
+// 4 hex chars of SHA-256 of the absolute repo-root path. Collisions only
+// matter between same-named checkouts on one machine, so 65536 values is
+// plenty; a collision costs an image rebuild, never data.
 func ProjectHash(root string) string {
 	sum := sha256.Sum256([]byte(root))
-	return hex.EncodeToString(sum[:])[:8]
+	return hex.EncodeToString(sum[:])[:4]
 }
 
 // ImageRepo is the Docker repository holding a project's images.

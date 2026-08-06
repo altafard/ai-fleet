@@ -36,7 +36,7 @@ Cross-cutting packages:
 ## Contracts that must not break
 
 - **Exit codes** (`run.Execute`): 0 success, 1 run/publish failure, 2 preflight/usage, 3 success with no commits, 130 interrupted. Entrypoint exit 86 means "commits exist but the bundle could not be written" — it must never be reported as a clean no-change run.
-- **Image naming, two schemes**: the generated-Dockerfile path uses `ai-fleet/<name>-<hash>:<content-tag>` and prunes stale tags per project; an explicit `--dockerfile` is the legacy/exceptional path — `ai-fleet:<content-tag>`, never pruned (user intent unknown). `<name>` = sanitized repo-root basename, `<hash>` = first 8 hex of SHA-256 of the absolute root path (machine-local, which is why `ai-fleet.ini` is never committed), content tag = first 12 hex of SHA-256 of Dockerfile bytes.
+- **Image naming, two schemes**: the generated-Dockerfile path uses `ai-fleet/<name>-<hash>:<content-tag>` and prunes stale tags per project; an explicit `--dockerfile` is the legacy/exceptional path — `ai-fleet:<content-tag>`, never pruned (user intent unknown). `<name>` = sanitized repo-root basename, `<hash>` = first 4 hex of SHA-256 of the absolute root path (machine-local, which is why `ai-fleet.ini` is never committed), content tag = first 12 hex of SHA-256 of Dockerfile bytes.
 - **Salvage semantics**: collect still runs after a failed or interrupted container so a bundle salvaged by the entrypoint's trap is verified and reported.
 - **Inventory parsing** (`initx`): strict on purpose — unknown JSON fields, trailing content, missing `base_image`, and injection-shaped values are errors. Don't loosen it to "be helpful".
 

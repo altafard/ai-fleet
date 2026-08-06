@@ -18,6 +18,12 @@ import (
 func gitInit(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	// Execute hashes the root as reported by `git rev-parse --show-toplevel`,
+	// which is the physical path — resolve macOS's /var -> /private/var here
+	// so expected tags are computed from the same spelling.
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 	cmd := exec.Command("git", "init", "-q", "-b", "main")
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
