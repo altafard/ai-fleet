@@ -8,13 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/altafard/ai-fleet/internal/dockerx"
-	"github.com/altafard/ai-fleet/internal/execx"
 	"github.com/altafard/ai-fleet/internal/gitx"
 	"github.com/altafard/ai-fleet/internal/initx"
 	"github.com/altafard/ai-fleet/internal/logstream"
@@ -69,7 +67,7 @@ func Execute(o Options) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return ExitUsage
 	}
-	gv, err := gitVersion()
+	gv, err := gitx.Version()
 	if err != nil {
 		return fail(err)
 	}
@@ -346,15 +344,6 @@ func (s *state) spinClaude(line string) {
 	s.turns++
 	msg, _ := logstream.ClaudeSummary(ev)
 	s.console.Spin(fmt.Sprintf("claude — turn %d: %s", s.turns, msg))
-}
-
-// gitVersion returns e.g. "2.44.0".
-func gitVersion() (string, error) {
-	r, err := execx.Run("", "git", "--version")
-	if err != nil || r.ExitCode != 0 {
-		return "", fmt.Errorf("git CLI not found in PATH")
-	}
-	return strings.TrimPrefix(r.Stdout, "git version "), nil
 }
 
 // bundleFailedExit mirrors the entrypoint's contract: commits were made but

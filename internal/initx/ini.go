@@ -3,7 +3,6 @@ package initx
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -11,21 +10,21 @@ import (
 // machine-local (the hash depends on the absolute path), so it is never
 // committed; each clone runs `ai-fleet init` itself.
 type Config struct {
-	Global bool
-	Name   string
-	Hash   string
+	Name string
+	Hash string
 }
 
-// RenderINI writes the fixed two-section format. Hand-rolled on purpose:
+// RenderINI writes the fixed one-section format. Hand-rolled on purpose:
 // the format is tiny and fixed, not worth a dependency.
 func RenderINI(c Config) string {
-	return fmt.Sprintf("[config]\nglobal = %t\n\n[project]\nname = %s\nhash = %s\n",
-		c.Global, c.Name, c.Hash)
+	return fmt.Sprintf("[project]\nname = %s\nhash = %s\n", c.Name, c.Hash)
 }
 
 // ParseINI reads the fixed format back. Unknown keys are ignored so future
-// versions can add keys without breaking older binaries; a missing project
-// name or hash is an error because nothing downstream works without them.
+// versions can add keys without breaking older binaries — this also covers
+// the retired [config] section's "global" key still present in old files; a
+// missing project name or hash is an error because nothing downstream works
+// without them.
 func ParseINI(data string) (Config, error) {
 	var c Config
 	section := ""
@@ -44,12 +43,6 @@ func ParseINI(data string) (Config, error) {
 		}
 		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
 		switch section + "." + k {
-		case "config.global":
-			b, err := strconv.ParseBool(v)
-			if err != nil {
-				return Config{}, fmt.Errorf("ai-fleet.ini config.global: %w", err)
-			}
-			c.Global = b
 		case "project.name":
 			c.Name = v
 		case "project.hash":

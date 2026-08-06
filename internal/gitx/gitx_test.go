@@ -304,6 +304,16 @@ func TestBaselineNoInformation(t *testing.T) {
 	}
 }
 
+func TestVersion(t *testing.T) {
+	v, err := Version()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v == "" || strings.HasPrefix(v, "git version") {
+		t.Fatalf("Version() = %q, want the bare number", v)
+	}
+}
+
 // When git cannot run at all (not on PATH), the wrapper errors must carry
 // that cause instead of formatting an empty stderr into "…failed: ".
 func TestErrorsKeepCauseWhenGitCannotRun(t *testing.T) {

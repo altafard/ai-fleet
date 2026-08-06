@@ -22,6 +22,16 @@ func git(dir string, args ...string) (execx.Result, error) {
 	return execx.Run(dir, "git", args...)
 }
 
+// Version returns the host git version (e.g. "2.47.0"), erroring when the
+// CLI is missing from PATH.
+func Version() (string, error) {
+	r, err := git("", "--version")
+	if err != nil || r.ExitCode != 0 {
+		return "", errors.New("git CLI not found in PATH")
+	}
+	return strings.TrimPrefix(r.Stdout, "git version "), nil
+}
+
 // RepoRoot resolves the root of the git repository containing dir,
 // erroring when dir is not inside a git work tree.
 func RepoRoot(dir string) (string, error) {
