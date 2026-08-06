@@ -301,7 +301,10 @@ func runPhases(s *state) (code int) {
 		"GIT_AUTHOR_NAME=" + s.o.GitAuthorName, "GIT_AUTHOR_EMAIL=" + s.o.GitAuthorEmail,
 		"FLEET_BRANCH=" + s.o.Branch, "FLEET_BASELINE_SHA=" + s.base.SHA,
 	}
-	args := dockerx.RunArgs(tag, name, mounts, envKeys, []string{"bash", "/source/entrypoint.sh"})
+	// Launch by image ID, not by tag: a concurrent run of the same project can
+	// prune between this run's build and here, and untagging never removes an
+	// image that something still references by ID.
+	args := dockerx.RunArgs(s.imageID, name, mounts, envKeys, []string{"bash", "/source/entrypoint.sh"})
 	// Set before starting the container so a signal arriving during startup
 	// can never race the watcher goroutine into skipping the stop.
 	containerName.Store(name)
