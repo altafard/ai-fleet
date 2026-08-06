@@ -385,11 +385,14 @@ func TestExecutePublishFailureIsRunFailure(t *testing.T) {
 	simulateSession(t, d, fx, 0, true)
 	d.prov.prErr = errors.New("github PR creation failed: 500 oops")
 	o := validOptions(t, fx)
-	o.GitProvider, o.GitRepository, o.GitToken = "github", "o/r", "tok"
+	o.GitProvider, o.GitRepository, o.GitToken = "github", "o/r", "sekret-token-value"
 	var code int
-	captureOutput(t, func() { code = Execute(o) })
+	out := captureOutput(t, func() { code = Execute(o) })
 	if code != ExitFailure {
 		t.Fatalf("exit = %d, want %d", code, ExitFailure)
+	}
+	if strings.Contains(out, "sekret-token-value") {
+		t.Fatal("the git token leaked into failure output")
 	}
 	st := readStatus(t, fx.root)
 	if st["error"] == nil {

@@ -174,10 +174,14 @@ func TestExecuteExistingDockerfileIsNotRegenerated(t *testing.T) {
 
 func TestExecuteAnalysisFailureWritesNothing(t *testing.T) {
 	stubOK(t)
-	analyze = func(root string) (Inventory, error) { return Inventory{}, errors.New("boom") }
+	calls := 0
+	analyze = func(root string) (Inventory, error) { calls++; return Inventory{}, errors.New("boom") }
 	root := gitInit(t)
 	if code := Execute(root); code != ExitFailure {
 		t.Fatalf("Execute = %d, want %d", code, ExitFailure)
+	}
+	if calls != 1 {
+		t.Errorf("analysis attempted %d times, want exactly 1 — no retry by design", calls)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".ai-fleet")); !os.IsNotExist(err) {
 		t.Error("analysis failure left files on disk")
@@ -186,12 +190,17 @@ func TestExecuteAnalysisFailureWritesNothing(t *testing.T) {
 
 func TestExecuteBuildFailureKeepsFiles(t *testing.T) {
 	stubOK(t)
+	calls := 0
 	buildImage = func(ctx context.Context, dockerfile, contextDir, tag string, onLine func(string)) (string, error) {
+		calls++
 		return "", errors.New("docker build failed with exit code 1")
 	}
 	root := gitInit(t)
 	if code := Execute(root); code != ExitFailure {
 		t.Fatalf("Execute = %d, want %d", code, ExitFailure)
+	}
+	if calls != 1 {
+		t.Errorf("build attempted %d times, want exactly 1 — no retry by design", calls)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".ai-fleet", "ai-fleet.ini")); err != nil {
 		t.Errorf("build failure removed generated files: %v", err)

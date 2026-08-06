@@ -340,6 +340,40 @@ func TestErrorsKeepCauseWhenGitCannotRun(t *testing.T) {
 	}
 }
 
+func TestVerifyBundleRejectsGarbage(t *testing.T) {
+	root := initRepo(t)
+	bad := filepath.Join(t.TempDir(), "bad.bundle")
+	if err := os.WriteFile(bad, []byte("this is not a git bundle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyBundle(root, bad); err == nil {
+		t.Fatal("a garbage bundle must not verify")
+	}
+}
+
+// A bundle is only applicable where its prerequisite commits exist; one
+// cut in an unrelated repository must fail verification, not fetch.
+func TestVerifyBundleRejectsMissingPrerequisites(t *testing.T) {
+	a := initRepo(t)
+	base := runGit(t, a, "rev-parse", "HEAD")
+	commitFile(t, a, "work.txt", "w\n", "feat: work")
+	bundle := filepath.Join(t.TempDir(), "run.bundle")
+	runGit(t, a, "bundle", "create", bundle, base+"..HEAD")
+
+	// The unrelated repo needs genuinely different history: two initRepo
+	// calls in the same second produce identical root-commit SHAs (same
+	// tree, author and timestamp), which would make the prerequisite exist.
+	b := t.TempDir()
+	runGit(t, b, "init", "-q", "-b", "main")
+	commitFile(t, b, "OTHER.md", "different\n", "chore: unrelated init")
+	if err := VerifyBundle(b, bundle); err == nil {
+		t.Fatal("a bundle with missing prerequisites must not verify")
+	}
+	if err := VerifyBundle(a, bundle); err != nil {
+		t.Fatalf("the same bundle must verify where it was cut: %v", err)
+	}
+}
+
 func TestCloneNoCheckoutAndCount(t *testing.T) {
 	root := initRepo(t)
 	b, _ := Baseline(root)
