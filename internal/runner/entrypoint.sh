@@ -53,7 +53,8 @@ git config user.email "$GIT_AUTHOR_EMAIL"
 git checkout -q -b "$FLEET_BRANCH"
 
 set +e
-claude -p "$(cat "$SRC/prompt.md")" --output-format stream-json --verbose --dangerously-skip-permissions &
+claude -p "$(cat "$SRC/prompt.md")" --model "$FLEET_MODEL" --effort "$FLEET_EFFORT" \
+  --output-format stream-json --verbose --dangerously-skip-permissions &
 cpid=$!
 wait "$cpid"
 cexit=$?
