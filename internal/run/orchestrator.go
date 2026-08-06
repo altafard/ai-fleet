@@ -16,6 +16,7 @@ import (
 	"github.com/altafard/ai-fleet/internal/dockerx"
 	"github.com/altafard/ai-fleet/internal/execx"
 	"github.com/altafard/ai-fleet/internal/gitx"
+	"github.com/altafard/ai-fleet/internal/initx"
 	"github.com/altafard/ai-fleet/internal/logstream"
 	"github.com/altafard/ai-fleet/internal/provider"
 	"github.com/altafard/ai-fleet/internal/runner"
@@ -41,6 +42,7 @@ type state struct {
 	console   *logstream.Console
 	logFile   *os.File // out/log.jsonl: the container's stdout, verbatim
 	imageID   string
+	imageRepo string // non-empty → project image naming + prune (generated Dockerfile)
 	commits   int
 	turns     int // claude assistant turns, for the progress spinner
 	stopped   atomic.Bool
@@ -81,14 +83,23 @@ func Execute(o Options) int {
 		return fail(fmt.Errorf("CLAUDE_CODE_OAUTH_TOKEN is not set; run `claude setup-token` and export it"))
 	}
 	s.console.Check("claude token present")
-	if _, err := os.Stat(o.Dockerfile); err != nil {
-		return fail(fmt.Errorf("dockerfile not found: %s", o.Dockerfile))
-	}
 	s.root, err = gitx.RepoRoot(o.Project)
 	if err != nil {
 		return fail(err)
 	}
 	s.console.Check(fmt.Sprintf("project %s is a git repository", filepath.Base(s.root)))
+	if s.o.Dockerfile == "" {
+		dfPath, repo, err := initx.ResolveProject(s.root)
+		if err != nil {
+			return fail(err)
+		}
+		s.o.Dockerfile = dfPath
+		s.imageRepo = repo
+		s.console.Check("using generated dockerfile: " + dfPath)
+	}
+	if _, err := os.Stat(s.o.Dockerfile); err != nil {
+		return fail(fmt.Errorf("dockerfile not found: %s", s.o.Dockerfile))
+	}
 	// Baseline resolution is a preflight concern too: an unresolvable default
 	// branch is an environment problem (exit 2), and nothing has been created
 	// on disk yet.
@@ -190,11 +201,19 @@ func runPhases(s *state) (code int) {
 		return
 	}
 	tag := dockerx.ImageTag(df)
+	contextDir := filepath.Dir(s.o.Dockerfile)
+	if s.imageRepo != "" {
+		// Generated Dockerfile: per-project repository, repo root as context.
+		// An explicit --dockerfile keeps the legacy shared tag untouched —
+		// the user's intent is unknown, so their images are never pruned.
+		tag = s.imageRepo + ":" + dockerx.ContentTag(df)
+		contextDir = s.root
+	}
 	s.console.Spin("building image")
 	buildStart := time.Now()
 	var buildTail []string
 	const buildTailMax = 10
-	s.imageID, err = dockerx.Build(ctx, s.o.Dockerfile, filepath.Dir(s.o.Dockerfile), tag,
+	s.imageID, err = dockerx.Build(ctx, s.o.Dockerfile, contextDir, tag,
 		func(line string) {
 			if step, total, instr, ok := logstream.ParseBuildStep(line); ok {
 				s.console.Spin(fmt.Sprintf("building image — step %d/%d: %s", step, total, instr))
@@ -214,6 +233,17 @@ func runPhases(s *state) (code int) {
 		return
 	}
 	s.console.Done(fmt.Sprintf("image built in %s", time.Since(buildStart).Round(time.Second)))
+	if s.imageRepo != "" {
+		removed, warns, perr := dockerx.PruneRepo(s.imageRepo, dockerx.ContentTag(df))
+		for _, w := range warns {
+			s.console.Warn(w)
+		}
+		if perr != nil {
+			s.console.Warn("image prune failed: " + perr.Error())
+		} else if removed > 0 {
+			s.console.Check(fmt.Sprintf("pruned %d old image(s)", removed))
+		}
+	}
 
 	// --- Phase 3: run snapshot — the run dir exists only from here on ---
 	s.dir, err = CreateRunDir(s.root, s.id)
@@ -271,7 +301,10 @@ func runPhases(s *state) (code int) {
 		"GIT_AUTHOR_NAME=" + s.o.GitAuthorName, "GIT_AUTHOR_EMAIL=" + s.o.GitAuthorEmail,
 		"FLEET_BRANCH=" + s.o.Branch, "FLEET_BASELINE_SHA=" + s.base.SHA,
 	}
-	args := dockerx.RunArgs(tag, name, mounts, envKeys, []string{"bash", "/source/entrypoint.sh"})
+	// Launch by image ID, not by tag: a concurrent run of the same project can
+	// prune between this run's build and here, and untagging never removes an
+	// image that something still references by ID.
+	args := dockerx.RunArgs(s.imageID, name, mounts, envKeys, []string{"bash", "/source/entrypoint.sh"})
 	// Set before starting the container so a signal arriving during startup
 	// can never race the watcher goroutine into skipping the stop.
 	containerName.Store(name)

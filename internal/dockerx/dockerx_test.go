@@ -58,3 +58,20 @@ func TestImageTag(t *testing.T) {
 		t.Fatal("different dockerfiles must produce different tags")
 	}
 }
+
+func TestContentTagMatchesImageTagSuffix(t *testing.T) {
+	df := []byte("FROM debian:bookworm-slim\n")
+	ct := ContentTag(df)
+	if len(ct) != 12 {
+		t.Errorf("ContentTag length = %d, want 12", len(ct))
+	}
+	if got, want := ImageTag(df), "ai-fleet:"+ct; got != want {
+		t.Errorf("ImageTag = %q, want %q", got, want)
+	}
+	if ContentTag(df) != ct {
+		t.Error("ContentTag is not deterministic")
+	}
+	if ContentTag([]byte("FROM other\n")) == ct {
+		t.Error("different content produced the same tag")
+	}
+}

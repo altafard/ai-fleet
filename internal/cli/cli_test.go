@@ -25,3 +25,15 @@ func TestVersionFlagPrintsSingleVersionLine(t *testing.T) {
 		t.Errorf("output %q is not exactly one line", got)
 	}
 }
+
+func TestInitCommandRegistered(t *testing.T) {
+	var code int
+	root := newRoot(&code)
+	cmd, _, err := root.Find([]string{"init"})
+	if err != nil || cmd.Use != "init" {
+		t.Fatalf("init command not registered: %v", err)
+	}
+	if cmd.Short == "" {
+		t.Error("init command has no Short description")
+	}
+}

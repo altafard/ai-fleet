@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/altafard/ai-fleet/internal/execx"
 )
@@ -42,12 +43,19 @@ func (m Mount) Arg() string {
 	return s
 }
 
-// ImageTag derives the image tag from the Dockerfile content —
-// "ai-fleet:" plus the first 12 hex characters of its SHA-256 — so an
-// unchanged Dockerfile reuses the cached image across runs.
-func ImageTag(dockerfileContent []byte) string {
+// ContentTag derives an image tag from Dockerfile content — the first 12
+// hex characters of its SHA-256 — so an unchanged Dockerfile reuses the
+// cached image across runs.
+func ContentTag(dockerfileContent []byte) string {
 	sum := sha256.Sum256(dockerfileContent)
-	return "ai-fleet:" + hex.EncodeToString(sum[:])[:12]
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// ImageTag is the legacy single-namespace tag used when the user supplies
+// an explicit --dockerfile: intent unknown, so these images are never
+// pruned and stay out of the per-project repositories.
+func ImageTag(dockerfileContent []byte) string {
+	return "ai-fleet:" + ContentTag(dockerfileContent)
 }
 
 // BuildArgs deliberately passes no --progress flag: the legacy builder
@@ -102,4 +110,39 @@ func Stop(name string) error {
 		return fmt.Errorf("docker stop failed: %s", r.Stderr)
 	}
 	return nil
+}
+
+// ListTags returns the tags currently present for one image repository.
+func ListTags(repo string) ([]string, error) {
+	r, err := execx.Run("", "docker", "images", repo, "--format", "{{.Tag}}")
+	if err != nil || r.ExitCode != 0 {
+		return nil, fmt.Errorf("docker images failed: %s", r.Stderr)
+	}
+	if r.Stdout == "" {
+		return nil, nil
+	}
+	return strings.Fields(r.Stdout), nil
+}
+
+// PruneRepo removes every image in repo whose tag differs from keep.
+// Individual removal failures (an image still used by a container) are
+// warnings, not errors — pruning is housekeeping, never a reason to fail
+// the surrounding command.
+func PruneRepo(repo, keep string) (removed int, warnings []string, err error) {
+	tags, err := ListTags(repo)
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, t := range tags {
+		if t == keep || t == "<none>" {
+			continue
+		}
+		r, err := execx.Run("", "docker", "rmi", repo+":"+t)
+		if err != nil || r.ExitCode != 0 {
+			warnings = append(warnings, fmt.Sprintf("could not remove %s:%s: %s", repo, t, r.Stderr))
+			continue
+		}
+		removed++
+	}
+	return removed, warnings, nil
 }

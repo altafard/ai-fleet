@@ -7,6 +7,22 @@ Run Claude Code headlessly in Docker on a copy of your repository — get the wo
 
 Check what you have: `ai-fleet --version`.
 
+## Getting started
+
+Initialize your project once — from anywhere inside its git repository:
+
+    cd your-project
+    ai-fleet init
+
+This checks your toolchain (git, Claude Code, Docker), asks Claude Code to
+analyze the project, generates `.ai-fleet/<project>.ai-fleet.dockerfile`
+(commit it — and edit it freely), and prebuilds the container image.
+
+Then deploy an agent:
+
+    ai-fleet deploy unit -p "your task" \
+      --git-author-name "You" --git-author-email you@example.com
+
 ## Versioning and releases
 
 Semantic versioning, pre-1.0 (`v0.x`): a minor bump means new features or
