@@ -61,6 +61,40 @@ func TestWriteFilesKeepsExistingRunsDir(t *testing.T) {
 	}
 }
 
+func TestWriteFilesCreatesRootDockerignore(t *testing.T) {
+	root := t.TempDir()
+	if _, err := WriteFiles(root, Config{Name: "p", Hash: "h1h2h3h4"}, []byte("FROM x\n")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, ".dockerignore"))
+	if err != nil {
+		t.Fatalf(".dockerignore not written at repo root: %v", err)
+	}
+	if string(got) != DockerignoreContent {
+		t.Errorf(".dockerignore = %q, want %q", got, DockerignoreContent)
+	}
+	for _, want := range []string{".git", ".ai-fleet"} {
+		if !strings.Contains(string(got), want+"\n") {
+			t.Errorf(".dockerignore is missing %q", want)
+		}
+	}
+}
+
+func TestWriteFilesKeepsExistingRootDockerignore(t *testing.T) {
+	root := t.TempDir()
+	mine := "node_modules\n"
+	if err := os.WriteFile(filepath.Join(root, ".dockerignore"), []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteFiles(root, Config{Name: "p", Hash: "h1h2h3h4"}, []byte("FROM x\n")); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(root, ".dockerignore"))
+	if string(got) != mine {
+		t.Errorf("existing .dockerignore was rewritten: %q", got)
+	}
+}
+
 func TestResolveProjectNotInitialized(t *testing.T) {
 	_, _, err := ResolveProject(t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "ai-fleet init") {

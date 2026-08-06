@@ -104,11 +104,18 @@ func Execute(cwd string) int {
 	if err != nil {
 		return fail(ExitFailure, err)
 	}
+	keptDockerignore := fileExists(filepath.Join(root, ".dockerignore"))
 	dfPath, err := WriteFiles(root, Config{Global: false, Name: name, Hash: hash}, df)
 	if err != nil {
 		return fail(ExitFailure, err)
 	}
-	console.Check("wrote .ai-fleet/.gitignore, ai-fleet.ini, " + DockerfileName(name))
+	wrote := "wrote .ai-fleet/.gitignore, ai-fleet.ini, " + DockerfileName(name)
+	if keptDockerignore {
+		console.Warn("kept the existing .dockerignore — add .git and .ai-fleet to keep the build context small")
+	} else {
+		wrote += " and .dockerignore"
+	}
+	console.Check(wrote)
 
 	repo := ImageRepo(name, hash)
 	tag := repo + ":" + dockerx.ContentTag(df)

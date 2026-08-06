@@ -18,9 +18,15 @@ func GitignoreContent(name string) string {
 	return "*\n!.gitignore\n!" + DockerfileName(name) + "\n"
 }
 
+// DockerignoreContent trims the build context: the generated Dockerfile has
+// no COPY or ADD, so tarring .git/ and .ai-fleet/runs/ (bundles and full
+// session transcripts, which only grow) into every build buys nothing.
+const DockerignoreContent = ".git\n.ai-fleet\n"
+
 // WriteFiles creates .ai-fleet/ under root (tolerating a pre-existing
 // folder — deploy runs create .ai-fleet/runs/ on their own) and writes the
-// three generated files. Returns the Dockerfile's path.
+// three generated files, plus a repo-root .dockerignore when none exists.
+// Returns the Dockerfile's path.
 func WriteFiles(root string, c Config, dockerfile []byte) (string, error) {
 	dir := filepath.Join(root, ".ai-fleet")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -36,7 +42,22 @@ func WriteFiles(root string, c Config, dockerfile []byte) (string, error) {
 	if err := os.WriteFile(dfPath, dockerfile, 0o644); err != nil {
 		return "", err
 	}
+	// Docker only honours a .dockerignore at the build context root, which
+	// here is the repository root, not .ai-fleet/. An existing one belongs to
+	// the project and its rules are none of our business.
+	if di := filepath.Join(root, ".dockerignore"); !fileExists(di) {
+		if err := os.WriteFile(di, []byte(DockerignoreContent), 0o644); err != nil {
+			return "", err
+		}
+	}
 	return dfPath, nil
+}
+
+// fileExists reports whether path is present; an unreadable path counts as
+// present, since writing over it is the outcome to avoid.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || !os.IsNotExist(err)
 }
 
 // ResolveProject loads the project config under root and returns the
