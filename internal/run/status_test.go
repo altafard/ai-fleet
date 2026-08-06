@@ -7,6 +7,39 @@ import (
 	"testing"
 )
 
+// A rewrite must replace the file, not truncate it in place — a reader
+// polling status.json while it is rewritten must never observe a partial
+// file. Replacement is observable as a new file identity, and the temp
+// file used for it must not survive.
+func TestWriteStatusReplacesInsteadOfTruncating(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "status.json")
+	if err := WriteStatus(p, Status{RunID: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteStatus(p, Status{RunID: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("status.json was truncated in place; write a temp file and rename it")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("leftover files next to status.json: %d entries", len(entries))
+	}
+}
+
 func TestWriteStatus(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "status.json")
 	err := WriteStatus(p, Status{
