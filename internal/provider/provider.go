@@ -23,8 +23,11 @@ type Provider interface {
 	// token authenticates elsewhere (an environment-backed credential
 	// helper), never inside the URL.
 	PushURL(repo, token string) (string, error)
-	// CreatePR opens the pull request and returns its URL.
-	CreatePR(client *http.Client, repo, token string, pr PR) (string, error)
+	// CreatePR opens the pull request and returns its URL. When the host
+	// reports that a PR for the same head already exists, the existing PR
+	// is adopted: its URL is returned with existed=true and no error — the
+	// pushed work is published either way.
+	CreatePR(client *http.Client, repo, token string, pr PR) (url string, existed bool, err error)
 }
 
 // New returns the Provider named by name. Only "github" is supported;

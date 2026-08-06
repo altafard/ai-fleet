@@ -443,14 +443,18 @@ func publish(s *state) error {
 	s.console.Check("pushed " + s.o.Branch)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	url, err := p.CreatePR(client, s.o.GitRepository, s.o.GitToken, provider.PR{
+	url, existed, err := p.CreatePR(client, s.o.GitRepository, s.o.GitToken, provider.PR{
 		Title: title, Body: body, Head: s.o.Branch, Base: s.base.Branch,
 	})
 	if err != nil {
 		return err
 	}
 	s.prURL = url
-	s.console.Check("pull request created: " + url)
+	if existed {
+		s.console.Check("pull request already exists, updated by the push: " + url)
+	} else {
+		s.console.Check("pull request created: " + url)
+	}
 	fmt.Println("Pull request:", url)
 	return nil
 }
