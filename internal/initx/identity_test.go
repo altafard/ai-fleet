@@ -10,9 +10,14 @@ func TestProjectName(t *testing.T) {
 		{"/Users/x/Projects/ai-fleet", "ai-fleet"},
 		{"/home/x/My App", "my-app"},
 		{"/home/x/CamelCase", "camelcase"},
-		{"/home/x/weird__name..", "weird__name"},
+		{"/home/x/weird__name..", "weird-name"},
 		{"/home/x/---", "project"},
 		{"/home/x/размер", "project"},
+		// Docker's reference grammar allows only ".", "_", "__" or "-"+ between
+		// alphanumeric runs, so every other separator run has to collapse.
+		{"/home/x/foo. bar", "foo-bar"},
+		{"/home/x/a..b", "a-b"},
+		{"/home/x/a___b", "a-b"},
 	}
 	for _, c := range cases {
 		if got := ProjectName(c.root); got != c.want {

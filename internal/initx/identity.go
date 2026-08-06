@@ -12,8 +12,14 @@ import (
 )
 
 // invalidComponent matches every character not allowed in a Docker
-// repository name component.
-var invalidComponent = regexp.MustCompile(`[^a-z0-9._-]`)
+// repository name component; separatorRun matches separator sequences the
+// reference grammar rejects. Docker only accepts ".", "_", "__" or a run of
+// "-" between alphanumeric runs, so anything longer than one character
+// collapses to a single "-", which is always valid.
+var (
+	invalidComponent = regexp.MustCompile(`[^a-z0-9._-]`)
+	separatorRun     = regexp.MustCompile(`[._-]{2,}`)
+)
 
 // ProjectName derives the project name from the repo-root path: the
 // directory basename, lowercased and sanitized to a valid Docker repository
@@ -22,6 +28,7 @@ func ProjectName(root string) string {
 	name := strings.ToLower(filepath.Base(root))
 	name = invalidComponent.ReplaceAllString(name, "-")
 	name = strings.Trim(name, "-._")
+	name = separatorRun.ReplaceAllString(name, "-")
 	if name == "" {
 		return "project"
 	}
