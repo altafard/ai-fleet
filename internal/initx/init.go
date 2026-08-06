@@ -51,6 +51,8 @@ var (
 // generation, image prebuild and prune — and returns the process exit code.
 // Stage order is a guarantee: nothing is written to disk before the
 // analysis has succeeded, so early failures leave the project untouched.
+// A generated Dockerfile already on disk is adopted verbatim and the
+// analysis is skipped — the file is committed, its registration is not.
 func Execute(cwd string) int {
 	console := logstream.NewConsole(os.Stdout, term.IsTerminal(int(os.Stdout.Fd())))
 	fail := func(code int, err error) int {
@@ -88,25 +90,40 @@ func Execute(cwd string) int {
 		return fail(ExitUsage, errors.New("project already initialized (.ai-fleet/ai-fleet.ini exists)"))
 	}
 
+	name, hash := ProjectName(root), ProjectHash(root)
+	dfPath := filepath.Join(root, ".ai-fleet", DockerfileName(name))
+
 	stopTick := startTicker(console)
 	defer stopTick()
 
-	console.Spin("analyzing project inventory (claude)")
-	inv, err := analyze(root)
-	if err != nil {
-		return fail(ExitFailure, fmt.Errorf("inventory analysis failed: %w", err))
+	// The Dockerfile is committed while ai-fleet.ini is not, so a fresh clone
+	// has the one but not the other. Analyzing again would overwrite a file
+	// the user was invited to hand-edit; there is nothing to analyze here,
+	// only a registration to restore.
+	var df []byte
+	if fileExists(dfPath) {
+		df, err = os.ReadFile(dfPath)
+		if err != nil {
+			return fail(ExitFailure, err)
+		}
+		console.Check("found existing dockerfile, re-registering without re-analyzing: " + dfPath)
+	} else {
+		console.Spin("analyzing project inventory (claude)")
+		inv, err := analyze(root)
+		if err != nil {
+			return fail(ExitFailure, fmt.Errorf("inventory analysis failed: %w", err))
+		}
+		console.Done(fmt.Sprintf("inventory: %s, %d packages, %d env vars",
+			inv.BaseImage, len(inv.Packages), len(inv.Env)))
+		rendered, err := RenderDockerfile(inv)
+		if err != nil {
+			return fail(ExitFailure, err)
+		}
+		df = rendered
 	}
-	console.Done(fmt.Sprintf("inventory: %s, %d packages, %d env vars",
-		inv.BaseImage, len(inv.Packages), len(inv.Env)))
 
-	name, hash := ProjectName(root), ProjectHash(root)
-	df, err := RenderDockerfile(inv)
-	if err != nil {
-		return fail(ExitFailure, err)
-	}
 	keptDockerignore := fileExists(filepath.Join(root, ".dockerignore"))
-	dfPath, err := WriteFiles(root, Config{Global: false, Name: name, Hash: hash}, df)
-	if err != nil {
+	if _, err := WriteFiles(root, Config{Global: false, Name: name, Hash: hash}, df); err != nil {
 		return fail(ExitFailure, err)
 	}
 	wrote := "wrote .ai-fleet/.gitignore, ai-fleet.ini, " + DockerfileName(name)
