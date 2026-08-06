@@ -13,6 +13,7 @@ import (
 )
 
 const stubClaude = `#!/usr/bin/env bash
+printf '%s\n' "$@" > "${FLEET_OUT_DIR}/claude-args.txt"
 echo '{"type":"system","subtype":"init"}'
 case "${STUB_MODE:-commit}" in
   commit) echo hello > stub.txt; git add stub.txt; git commit -q -m "feat: add stub file";;
@@ -89,6 +90,7 @@ func entrypointEnv(bin, src, wsDir, outDir, sha, mode, stubExit string) []string
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"FLEET_SOURCE_DIR="+src, "FLEET_WORKSPACE_DIR="+wsDir, "FLEET_OUT_DIR="+outDir,
 		"FLEET_BRANCH=feature/test", "FLEET_BASELINE_SHA="+sha,
+		"FLEET_MODEL=opus", "FLEET_EFFORT=high",
 		"GIT_AUTHOR_NAME=Bot", "GIT_AUTHOR_EMAIL=bot@example.com",
 		"GIT_COMMITTER_NAME=Bot", "GIT_COMMITTER_EMAIL=bot@example.com",
 		"STUB_MODE="+mode, "STUB_EXIT="+stubExit)
@@ -113,6 +115,25 @@ func TestEntrypointHappyPath(t *testing.T) {
 		t.Fatalf("claude stdout not passed through:\n%s", stdout)
 	}
 	bundleHasBranch(t, filepath.Join(out, "run.bundle"))
+}
+
+// TestEntrypointPassesModelAndEffort: the host chose the model and effort at
+// preflight; the entrypoint must hand both to claude verbatim.
+func TestEntrypointPassesModelAndEffort(t *testing.T) {
+	run, out, _ := harness(t, "commit", "0")
+	stdout, code := run()
+	if code != 0 {
+		t.Fatalf("exit=%d\n%s", code, stdout)
+	}
+	args, err := os.ReadFile(filepath.Join(out, "claude-args.txt"))
+	if err != nil {
+		t.Fatalf("stub did not record args: %v", err)
+	}
+	for _, want := range []string{"--model\nopus\n", "--effort\nhigh\n"} {
+		if !strings.Contains(string(args), want) {
+			t.Fatalf("claude args missing %q:\n%s", want, args)
+		}
+	}
 }
 
 func TestEntrypointDirtyTreeGetsSafetyCommit(t *testing.T) {

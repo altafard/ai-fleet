@@ -21,6 +21,7 @@ analyze the project, generates `.ai-fleet/<project>.ai-fleet.dockerfile`
 Then deploy an agent:
 
     ai-fleet deploy unit -p "your task" \
+      --model opus --effort high \
       --git-author-name "You" --git-author-email you@example.com
 
 ## Versioning and releases

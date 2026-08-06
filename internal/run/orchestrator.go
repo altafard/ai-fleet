@@ -296,10 +296,11 @@ func runPhases(s *state) (code int) {
 		{Source: s.dir.Out(), Target: "/out"},
 	}
 	envKeys := []string{"CLAUDE_CODE_OAUTH_TOKEN", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
-		"FLEET_BRANCH", "FLEET_BASELINE_SHA"}
+		"FLEET_BRANCH", "FLEET_BASELINE_SHA", "FLEET_MODEL", "FLEET_EFFORT"}
 	env := []string{
 		"GIT_AUTHOR_NAME=" + s.o.GitAuthorName, "GIT_AUTHOR_EMAIL=" + s.o.GitAuthorEmail,
 		"FLEET_BRANCH=" + s.o.Branch, "FLEET_BASELINE_SHA=" + s.base.SHA,
+		"FLEET_MODEL=" + s.o.Model, "FLEET_EFFORT=" + s.o.Effort,
 	}
 	// Launch by image ID, not by tag: a concurrent run of the same project can
 	// prune between this run's build and here, and untagging never removes an
@@ -484,7 +485,8 @@ func startTicker(c *logstream.Console) func() {
 func writeFinalStatus(s *state, code int, started time.Time) {
 	st := Status{
 		RunID: s.id, BaselineRef: s.base.Ref, BaselineSHA: s.base.SHA,
-		Branch: s.o.Branch, ImageID: s.imageID, ExitCode: code, CommitCount: s.commits,
+		Branch: s.o.Branch, Model: s.o.Model, Effort: s.o.Effort,
+		ImageID: s.imageID, ExitCode: code, CommitCount: s.commits,
 		PRURL: s.prURL, StartedAt: started.Format(time.RFC3339),
 		FinishedAt: time.Now().UTC().Format(time.RFC3339),
 	}

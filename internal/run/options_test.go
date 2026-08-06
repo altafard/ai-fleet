@@ -6,6 +6,7 @@ func opts() Options {
 	return Options{
 		Prompt: "do things", Dockerfile: "Dockerfile",
 		GitAuthorName: "Bot", GitAuthorEmail: "bot@example.com",
+		Model: "claude-opus-5", Effort: "high",
 	}
 }
 
@@ -30,6 +31,14 @@ func TestValidateRules(t *testing.T) {
 		{"unknown provider", func(o *Options) {
 			o.GitProvider, o.GitRepository, o.GitToken = "svn", "o/r", "t"
 		}},
+		{"no model", func(o *Options) { o.Model = "" }},
+		{"no effort", func(o *Options) { o.Effort = "" }},
+		{"unknown effort", func(o *Options) { o.Effort = "hihg" }},
+		{"effort not a flag value", func(o *Options) { o.Effort = "ultracode" }},
+		{"model with space", func(o *Options) { o.Model = "opus 5" }},
+		{"model with shell metachar", func(o *Options) { o.Model = "opus;rm" }},
+		{"model with dollar", func(o *Options) { o.Model = "$MODEL" }},
+		{"model leading dash", func(o *Options) { o.Model = "-opus" }},
 	}
 	for _, c := range cases {
 		o := opts()
@@ -41,9 +50,24 @@ func TestValidateRules(t *testing.T) {
 }
 
 func TestValidateDockerfileOptional(t *testing.T) {
-	o := Options{Prompt: "do it", GitAuthorName: "a", GitAuthorEmail: "a@b"}
+	o := Options{Prompt: "do it", GitAuthorName: "a", GitAuthorEmail: "a@b",
+		Model: "opus", Effort: "high"}
 	if err := o.Validate(); err != nil {
 		t.Errorf("Validate with empty Dockerfile = %v, want nil", err)
+	}
+}
+
+func TestValidateModelAndEffortAccepted(t *testing.T) {
+	models := []string{"opus", "claude-opus-5", "opus[1m]", "claude-3.5_test"}
+	efforts := []string{"low", "medium", "high", "xhigh", "max"}
+	for _, m := range models {
+		for _, e := range efforts {
+			o := opts()
+			o.Model, o.Effort = m, e
+			if err := o.Validate(); err != nil {
+				t.Errorf("model %q effort %q: want ok, got %v", m, e, err)
+			}
+		}
 	}
 }
 

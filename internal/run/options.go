@@ -19,6 +19,8 @@ type Options struct {
 	Branch         string // empty → feature/<run-id>, applied in preflight
 	GitAuthorName  string
 	GitAuthorEmail string
+	Model          string // claude model alias or full ID; validity is claude's concern
+	Effort         string // one of effortLevels, passed to claude --effort
 	GitProvider    string // PR mode; "github" in v1
 	GitRepository  string
 	GitToken       string
@@ -29,9 +31,21 @@ type Options struct {
 // and refspecs.
 var branchRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 
+// modelRe deliberately checks shape, not validity: model names change with
+// every Claude release, so ai-fleet only rejects strings that could not be a
+// model reference (whitespace, shell metacharacters). Brackets are allowed
+// because claude's alias syntax uses them (e.g. "opus[1m]").
+var modelRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._\[\]-]*$`)
+
+// effortLevels are the claude CLI's --effort values. ultracode is excluded:
+// it is a session-only multi-agent mode, not a reasoning-effort level.
+var effortLevels = map[string]bool{
+	"low": true, "medium": true, "high": true, "xhigh": true, "max": true,
+}
+
 // Validate checks flag coherence: exactly one prompt source, the required
-// Dockerfile and git-identity flags, a safe branch name, and all-or-none
-// PR-mode flags naming a supported provider. It reports the first
+// Dockerfile, git-identity and model/effort flags, a safe branch name, and
+// all-or-none PR-mode flags naming a supported provider. It reports the first
 // violation found.
 func (o *Options) Validate() error {
 	if (o.Prompt == "") == (o.PromptFile == "") {
@@ -39,6 +53,15 @@ func (o *Options) Validate() error {
 	}
 	if o.GitAuthorName == "" || o.GitAuthorEmail == "" {
 		return errors.New("--git-author-name and --git-author-email are required")
+	}
+	if o.Model == "" || o.Effort == "" {
+		return errors.New("--model and --effort are required")
+	}
+	if !modelRe.MatchString(o.Model) {
+		return fmt.Errorf("invalid --model %q: allowed characters are A-Z a-z 0-9 . _ [ ] -", o.Model)
+	}
+	if !effortLevels[o.Effort] {
+		return fmt.Errorf("invalid --effort %q: must be one of low, medium, high, xhigh, max", o.Effort)
 	}
 	if o.Branch != "" && !branchRe.MatchString(o.Branch) {
 		return fmt.Errorf("invalid --branch %q: allowed characters are A-Z a-z 0-9 . _ / -", o.Branch)
