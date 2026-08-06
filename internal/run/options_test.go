@@ -23,7 +23,6 @@ func TestValidateRules(t *testing.T) {
 	}{
 		{"no prompt", func(o *Options) { o.Prompt = "" }},
 		{"both prompts", func(o *Options) { o.PromptFile = "p.md" }},
-		{"no dockerfile", func(o *Options) { o.Dockerfile = "" }},
 		{"no author name", func(o *Options) { o.GitAuthorName = "" }},
 		{"no author email", func(o *Options) { o.GitAuthorEmail = "" }},
 		{"bad branch", func(o *Options) { o.Branch = "feat ure" }},
@@ -38,6 +37,13 @@ func TestValidateRules(t *testing.T) {
 		if err := o.Validate(); err == nil {
 			t.Errorf("%s: want error, got nil", c.name)
 		}
+	}
+}
+
+func TestValidateDockerfileOptional(t *testing.T) {
+	o := Options{Prompt: "do it", GitAuthorName: "a", GitAuthorEmail: "a@b"}
+	if err := o.Validate(); err != nil {
+		t.Errorf("Validate with empty Dockerfile = %v, want nil", err)
 	}
 }
 

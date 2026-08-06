@@ -14,7 +14,7 @@ import (
 type Options struct {
 	Prompt         string
 	PromptFile     string
-	Dockerfile     string
+	Dockerfile     string // empty → the generated .ai-fleet Dockerfile, resolved in preflight
 	Project        string // any dir inside the repo; root resolved in preflight
 	Branch         string // empty → feature/<run-id>, applied in preflight
 	GitAuthorName  string
@@ -36,9 +36,6 @@ var branchRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 func (o *Options) Validate() error {
 	if (o.Prompt == "") == (o.PromptFile == "") {
 		return errors.New("exactly one of --prompt or --prompt-file is required")
-	}
-	if o.Dockerfile == "" {
-		return errors.New("--dockerfile is required")
 	}
 	if o.GitAuthorName == "" || o.GitAuthorEmail == "" {
 		return errors.New("--git-author-name and --git-author-email are required")
