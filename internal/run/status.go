@@ -11,6 +11,8 @@ type Status struct {
 	BaselineRef string `json:"baseline_ref"`
 	BaselineSHA string `json:"baseline_sha"`
 	Branch      string `json:"branch"`
+	Model       string `json:"model"`
+	Effort      string `json:"effort"`
 	ImageID     string `json:"image_id"`
 	ExitCode    int    `json:"exit_code"`
 	CommitCount int    `json:"commit_count"`
