@@ -11,6 +11,15 @@ import (
 // Execute parses argv and returns the process exit code.
 func Execute() int {
 	code := 0
+	root := newRoot(&code)
+	if err := root.Execute(); err != nil {
+		return 2
+	}
+	return code
+}
+
+// newRoot builds the command tree; code receives the run's exit code.
+func newRoot(code *int) *cobra.Command {
 	o := run.Options{}
 
 	unit := &cobra.Command{
@@ -28,7 +37,7 @@ func Execute() int {
 				o.Project = wd
 			}
 			cmd.SilenceUsage = true
-			code = run.Execute(o)
+			*code = run.Execute(o)
 			return nil
 		},
 	}
@@ -47,10 +56,8 @@ func Execute() int {
 	deploy := &cobra.Command{Use: "deploy", Short: "Deploy agents"}
 	deploy.AddCommand(unit)
 	root := &cobra.Command{Use: "ai-fleet", SilenceErrors: false}
+	root.Version = versionLine()
+	root.SetVersionTemplate("{{.Version}}\n")
 	root.AddCommand(deploy)
-
-	if err := root.Execute(); err != nil {
-		return 2
-	}
-	return code
+	return root
 }
