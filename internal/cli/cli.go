@@ -4,6 +4,7 @@ package cli
 import (
 	"os"
 
+	"github.com/altafard/ai-fleet/internal/initx"
 	"github.com/altafard/ai-fleet/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -55,9 +56,25 @@ func newRoot(code *int) *cobra.Command {
 
 	deploy := &cobra.Command{Use: "deploy", Short: "Deploy agents"}
 	deploy.AddCommand(unit)
+
+	initCmd := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize this project: generate .ai-fleet files and prebuild the image",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			wd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			*code = initx.Execute(wd)
+			return nil
+		},
+	}
+
 	root := &cobra.Command{Use: "ai-fleet", SilenceErrors: false}
 	root.Version = versionLine()
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(deploy)
+	root.AddCommand(deploy, initCmd)
 	return root
 }
