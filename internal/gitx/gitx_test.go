@@ -304,6 +304,32 @@ func TestBaselineNoInformation(t *testing.T) {
 	}
 }
 
+// When git cannot run at all (not on PATH), the wrapper errors must carry
+// that cause instead of formatting an empty stderr into "…failed: ".
+func TestErrorsKeepCauseWhenGitCannotRun(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"CloneNoCheckout", func() error { return CloneNoCheckout(t.TempDir(), filepath.Join(t.TempDir(), "wt"), "deadbeef") }},
+		{"VerifyBundle", func() error { return VerifyBundle(t.TempDir(), "run.bundle") }},
+		{"FetchBundle", func() error { return FetchBundle(t.TempDir(), "run.bundle", "feature/x") }},
+		{"CountCommits", func() error { _, err := CountCommits(t.TempDir(), "a", "b"); return err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatal("want error when git is missing")
+			}
+			if !strings.Contains(err.Error(), "executable file not found") {
+				t.Errorf("error lost its cause: %q", err.Error())
+			}
+		})
+	}
+}
+
 func TestCloneNoCheckoutAndCount(t *testing.T) {
 	root := initRepo(t)
 	b, _ := Baseline(root)

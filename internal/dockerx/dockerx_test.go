@@ -3,6 +3,7 @@ package dockerx
 import (
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,30 @@ func TestImageTag(t *testing.T) {
 	}
 	if tag == ImageTag([]byte("FROM alpine\n")) {
 		t.Fatal("different dockerfiles must produce different tags")
+	}
+}
+
+// When docker cannot run at all (not on PATH), the wrapper errors must
+// carry that cause instead of formatting an empty stderr into "…failed: ".
+func TestErrorsKeepCauseWhenDockerCannotRun(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"Stop", func() error { return Stop("ai-fleet-x") }},
+		{"ListTags", func() error { _, err := ListTags("ai-fleet/x"); return err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatal("want error when docker is missing")
+			}
+			if !strings.Contains(err.Error(), "executable file not found") {
+				t.Errorf("error lost its cause: %q", err.Error())
+			}
+		})
 	}
 }
 

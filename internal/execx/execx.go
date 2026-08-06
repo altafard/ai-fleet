@@ -33,6 +33,17 @@ type Result struct {
 	ExitCode int
 }
 
+// Cause selects the failure description for a call that did not succeed:
+// when the process could not run at all, Stderr is empty (there was no
+// process to write it), so only err carries the cause — formatting Stderr
+// unconditionally would report "…failed: " with nothing after the colon.
+func Cause(r Result, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return r.Stderr
+}
+
 // Run executes and captures. A non-zero exit code is reported in Result,
 // not as an error; error means the process could not run at all.
 func Run(dir, name string, args ...string) (Result, error) {
