@@ -43,6 +43,15 @@ func TestConsoleNonTTYDedupesSpin(t *testing.T) {
 	}
 }
 
+func TestConsoleWarn(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewConsole(&buf, false)
+	c.Warn("subdirectory detected")
+	if got := buf.String(); got != "! subdirectory detected\n" {
+		t.Errorf("Warn output = %q", got)
+	}
+}
+
 func TestFrames(t *testing.T) {
 	if len(Frames) != 10 || Frames[0] != "⠋" {
 		t.Fatalf("frames=%v", Frames)

@@ -33,6 +33,9 @@ func (c *Console) Check(msg string) { c.line("✓ " + msg) }
 // Fail prints a failed-step line (clearing any active spinner).
 func (c *Console) Fail(msg string) { c.line("✗ " + msg) }
 
+// Warn prints a warning line (clearing any active spinner).
+func (c *Console) Warn(msg string) { c.line("! " + msg) }
+
 // Done finishes the active spinner as a completed step.
 func (c *Console) Done(msg string) { c.line("✓ " + msg) }
 
