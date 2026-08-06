@@ -166,8 +166,13 @@ func Execute(cwd string) int {
 	if err != nil {
 		console.Warn("image prune failed: " + err.Error())
 	}
-	console.Done(fmt.Sprintf("image built in %s, %d old image(s) pruned",
-		time.Since(buildStart).Round(time.Second), removed))
+	built := fmt.Sprintf("image built in %s", time.Since(buildStart).Round(time.Second))
+	// "0 old image(s) pruned" reads as "nothing needed pruning" even when the
+	// prune itself failed, so the count is only reported when it happened.
+	if err == nil && removed > 0 {
+		built += fmt.Sprintf(", %d old image(s) pruned", removed)
+	}
+	console.Done(built)
 	return ExitOK
 }
 
