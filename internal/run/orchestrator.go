@@ -48,6 +48,23 @@ type state struct {
 	startedAt time.Time
 }
 
+// Test seams: external effects that need docker or a network go through
+// package variables so phase ordering, failure handling and publish are
+// testable without either (mirroring initx's seam pattern). Git operations
+// have no seam on purpose — tests use real repositories in temp dirs, the
+// codebase's convention.
+var (
+	gitVersion      = gitx.Version
+	dockerVersion   = dockerx.Version
+	buildImage      = dockerx.Build
+	runContainer    = dockerx.RunContainer
+	stopContainer   = dockerx.Stop
+	removeContainer = dockerx.RemoveForce
+	pruneRepo       = dockerx.PruneRepo
+	pushBranch      = gitx.Push
+	newProvider     = provider.New
+)
+
 // Execute performs one deploy-unit run through all of its phases —
 // preflight, image build, run snapshot, container execution, collect, and
 // (in PR mode) publish — and returns the process exit code (see the Exit
@@ -67,12 +84,12 @@ func Execute(o Options) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return ExitUsage
 	}
-	gv, err := gitx.Version()
+	gv, err := gitVersion()
 	if err != nil {
 		return fail(err)
 	}
 	s.console.Check("git " + gv)
-	dv, err := dockerx.Version()
+	dv, err := dockerVersion()
 	if err != nil {
 		return fail(err)
 	}
@@ -163,7 +180,7 @@ func runPhases(s *state) (code int) {
 			s.stopped.Store(true)
 			cancel()
 			if name, ok := containerName.Load().(string); ok && name != "" {
-				if err := dockerx.Stop(name); err != nil {
+				if err := stopContainer(name); err != nil {
 					fmt.Fprintln(os.Stderr, "ai-fleet: docker stop failed:", err)
 				}
 			}
@@ -174,7 +191,7 @@ func runPhases(s *state) (code int) {
 			// it is force-removed before the process exits.
 			fmt.Fprintln(os.Stderr, "ai-fleet: second interrupt received, aborting")
 			if name, ok := containerName.Load().(string); ok && name != "" {
-				if err := dockerx.RemoveForce(name); err != nil {
+				if err := removeContainer(name); err != nil {
 					fmt.Fprintln(os.Stderr, "ai-fleet:", err)
 				}
 			}
@@ -208,7 +225,7 @@ func runPhases(s *state) (code int) {
 	buildStart := time.Now()
 	var buildTail []string
 	const buildTailMax = 10
-	s.imageID, err = dockerx.Build(ctx, s.o.Dockerfile, contextDir, tag,
+	s.imageID, err = buildImage(ctx, s.o.Dockerfile, contextDir, tag,
 		func(line string) {
 			if step, total, instr, ok := logstream.ParseBuildStep(line); ok {
 				s.console.Spin(fmt.Sprintf("building image — step %d/%d: %s", step, total, instr))
@@ -229,7 +246,7 @@ func runPhases(s *state) (code int) {
 	}
 	s.console.Done(fmt.Sprintf("image built in %s", time.Since(buildStart).Round(time.Second)))
 	if s.imageRepo != "" {
-		removed, warns, perr := dockerx.PruneRepo(s.imageRepo, dockerx.ContentTag(df))
+		removed, warns, perr := pruneRepo(s.imageRepo, dockerx.ContentTag(df))
 		for _, w := range warns {
 			s.console.Warn(w)
 		}
@@ -314,7 +331,7 @@ func runPhases(s *state) (code int) {
 	}
 	s.console.Spin("container running")
 
-	exit, err := dockerx.RunContainer(context.Background(), args, env, func(line string) {
+	exit, err := runContainer(context.Background(), args, env, func(line string) {
 		s.logFile.WriteString(line + "\n")
 		s.spinClaude(line)
 	})
@@ -422,7 +439,7 @@ func publish(s *state) error {
 	}
 	s.console.Check("PR composed: " + title)
 
-	p, err := provider.New(s.o.GitProvider)
+	p, err := newProvider(s.o.GitProvider)
 	if err != nil {
 		return err
 	}
@@ -431,7 +448,7 @@ func publish(s *state) error {
 		return err
 	}
 	// The bundle was already fetched into worktree/ by collect.
-	if err := gitx.Push(s.dir.Worktree(), pushURL, s.o.Branch, s.o.GitToken); err != nil {
+	if err := pushBranch(s.dir.Worktree(), pushURL, s.o.Branch, s.o.GitToken); err != nil {
 		return err
 	}
 	s.console.Check("pushed " + s.o.Branch)
