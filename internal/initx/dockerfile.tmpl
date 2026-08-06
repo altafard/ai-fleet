@@ -4,7 +4,7 @@ FROM {{.BaseImage}}
 RUN apt-get update && apt-get install -y --no-install-recommends {{join .Packages " "}} \
  && rm -rf /var/lib/apt/lists/*
 {{end}}{{if .Env}}
-{{range $k, $v := .Env}}ENV {{$k}}={{$v}}
+{{range $k, $v := .Env}}ENV {{$k}}={{printf "%q" $v}}
 {{end}}{{end}}
 RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV PATH="/root/.local/bin:${PATH}"
