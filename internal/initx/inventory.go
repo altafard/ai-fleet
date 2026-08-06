@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -52,5 +53,43 @@ func ParseInventory(claudeStdout string) (Inventory, error) {
 	if inv.BaseImage == "" {
 		return Inventory{}, errors.New("inventory is missing base_image")
 	}
+	if err := validateInventory(inv); err != nil {
+		return Inventory{}, err
+	}
 	return inv, nil
+}
+
+// The analysis runs claude inside a repository nobody here has audited, so
+// its reply is attacker-controlled input: prompt injection in a README can
+// dictate these fields. They are interpolated into the Dockerfile by
+// text/template, which escapes nothing — a newline in any of them becomes
+// an extra Dockerfile directive that `docker build` runs on the host,
+// outside any sandbox. Each field is therefore constrained to a shape that
+// cannot span a line or introduce shell metacharacters.
+var (
+	imageReference = regexp.MustCompile(`^[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[\w][\w.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$`)
+	packageName    = regexp.MustCompile(`^[a-z0-9][a-z0-9+._-]*$`)
+	envKey         = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+func validateInventory(inv Inventory) error {
+	if !imageReference.MatchString(inv.BaseImage) {
+		return fmt.Errorf("inventory base_image %q is not a valid image reference", inv.BaseImage)
+	}
+	for _, p := range inv.Packages {
+		if !packageName.MatchString(p) {
+			return fmt.Errorf("inventory package %q is not a valid package name", p)
+		}
+	}
+	for k, v := range inv.Env {
+		if !envKey.MatchString(k) {
+			return fmt.Errorf("inventory env key %q is not a valid environment variable name", k)
+		}
+		// Docker interprets backslash escapes inside an ENV value, so quoting
+		// alone would not contain one; reject them along with line breaks.
+		if strings.ContainsAny(v, "\n\r\\") {
+			return fmt.Errorf("inventory env value for %q contains a line break or backslash", k)
+		}
+	}
+	return nil
 }

