@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/altafard/ai-fleet/internal/dockerx"
@@ -26,13 +25,7 @@ const (
 // Test seams: every external effect goes through a package variable so the
 // orchestrator's stage ordering is testable without claude or docker.
 var (
-	gitVersion = func() (string, error) {
-		r, err := execx.Run("", "git", "--version")
-		if err != nil || r.ExitCode != 0 {
-			return "", errors.New("git CLI not found in PATH")
-		}
-		return strings.TrimPrefix(r.Stdout, "git version "), nil
-	}
+	gitVersion    = gitx.Version
 	claudeVersion = func() (string, error) {
 		r, err := execx.Run("", "claude", "--version")
 		if err != nil || r.ExitCode != 0 {
@@ -123,7 +116,7 @@ func Execute(cwd string) int {
 	}
 
 	keptDockerignore := fileExists(filepath.Join(root, ".dockerignore"))
-	if _, err := WriteFiles(root, Config{Global: false, Name: name, Hash: hash}, df); err != nil {
+	if _, err := WriteFiles(root, Config{Name: name, Hash: hash}, df); err != nil {
 		return fail(ExitFailure, err)
 	}
 	wrote := "wrote .ai-fleet/.gitignore, ai-fleet.ini, " + DockerfileName(name)

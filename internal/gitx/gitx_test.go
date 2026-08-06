@@ -304,6 +304,76 @@ func TestBaselineNoInformation(t *testing.T) {
 	}
 }
 
+func TestVersion(t *testing.T) {
+	v, err := Version()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v == "" || strings.HasPrefix(v, "git version") {
+		t.Fatalf("Version() = %q, want the bare number", v)
+	}
+}
+
+// When git cannot run at all (not on PATH), the wrapper errors must carry
+// that cause instead of formatting an empty stderr into "…failed: ".
+func TestErrorsKeepCauseWhenGitCannotRun(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"CloneNoCheckout", func() error { return CloneNoCheckout(t.TempDir(), filepath.Join(t.TempDir(), "wt"), "deadbeef") }},
+		{"VerifyBundle", func() error { return VerifyBundle(t.TempDir(), "run.bundle") }},
+		{"FetchBundle", func() error { return FetchBundle(t.TempDir(), "run.bundle", "feature/x") }},
+		{"CountCommits", func() error { _, err := CountCommits(t.TempDir(), "a", "b"); return err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatal("want error when git is missing")
+			}
+			if !strings.Contains(err.Error(), "executable file not found") {
+				t.Errorf("error lost its cause: %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestVerifyBundleRejectsGarbage(t *testing.T) {
+	root := initRepo(t)
+	bad := filepath.Join(t.TempDir(), "bad.bundle")
+	if err := os.WriteFile(bad, []byte("this is not a git bundle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyBundle(root, bad); err == nil {
+		t.Fatal("a garbage bundle must not verify")
+	}
+}
+
+// A bundle is only applicable where its prerequisite commits exist; one
+// cut in an unrelated repository must fail verification, not fetch.
+func TestVerifyBundleRejectsMissingPrerequisites(t *testing.T) {
+	a := initRepo(t)
+	base := runGit(t, a, "rev-parse", "HEAD")
+	commitFile(t, a, "work.txt", "w\n", "feat: work")
+	bundle := filepath.Join(t.TempDir(), "run.bundle")
+	runGit(t, a, "bundle", "create", bundle, base+"..HEAD")
+
+	// The unrelated repo needs genuinely different history: two initRepo
+	// calls in the same second produce identical root-commit SHAs (same
+	// tree, author and timestamp), which would make the prerequisite exist.
+	b := t.TempDir()
+	runGit(t, b, "init", "-q", "-b", "main")
+	commitFile(t, b, "OTHER.md", "different\n", "chore: unrelated init")
+	if err := VerifyBundle(b, bundle); err == nil {
+		t.Fatal("a bundle with missing prerequisites must not verify")
+	}
+	if err := VerifyBundle(a, bundle); err != nil {
+		t.Fatalf("the same bundle must verify where it was cut: %v", err)
+	}
+}
+
 func TestCloneNoCheckoutAndCount(t *testing.T) {
 	root := initRepo(t)
 	b, _ := Baseline(root)

@@ -18,6 +18,12 @@ import (
 func gitInit(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	// Execute hashes the root as reported by `git rev-parse --show-toplevel`,
+	// which is the physical path — resolve macOS's /var -> /private/var here
+	// so expected tags are computed from the same spelling.
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 	cmd := exec.Command("git", "init", "-q", "-b", "main")
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -168,10 +174,14 @@ func TestExecuteExistingDockerfileIsNotRegenerated(t *testing.T) {
 
 func TestExecuteAnalysisFailureWritesNothing(t *testing.T) {
 	stubOK(t)
-	analyze = func(root string) (Inventory, error) { return Inventory{}, errors.New("boom") }
+	calls := 0
+	analyze = func(root string) (Inventory, error) { calls++; return Inventory{}, errors.New("boom") }
 	root := gitInit(t)
 	if code := Execute(root); code != ExitFailure {
 		t.Fatalf("Execute = %d, want %d", code, ExitFailure)
+	}
+	if calls != 1 {
+		t.Errorf("analysis attempted %d times, want exactly 1 — no retry by design", calls)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".ai-fleet")); !os.IsNotExist(err) {
 		t.Error("analysis failure left files on disk")
@@ -180,12 +190,17 @@ func TestExecuteAnalysisFailureWritesNothing(t *testing.T) {
 
 func TestExecuteBuildFailureKeepsFiles(t *testing.T) {
 	stubOK(t)
+	calls := 0
 	buildImage = func(ctx context.Context, dockerfile, contextDir, tag string, onLine func(string)) (string, error) {
+		calls++
 		return "", errors.New("docker build failed with exit code 1")
 	}
 	root := gitInit(t)
 	if code := Execute(root); code != ExitFailure {
 		t.Fatalf("Execute = %d, want %d", code, ExitFailure)
+	}
+	if calls != 1 {
+		t.Errorf("build attempted %d times, want exactly 1 — no retry by design", calls)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".ai-fleet", "ai-fleet.ini")); err != nil {
 		t.Errorf("build failure removed generated files: %v", err)

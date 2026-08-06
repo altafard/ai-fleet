@@ -22,6 +22,16 @@ func git(dir string, args ...string) (execx.Result, error) {
 	return execx.Run(dir, "git", args...)
 }
 
+// Version returns the host git version (e.g. "2.47.0"), erroring when the
+// CLI is missing from PATH.
+func Version() (string, error) {
+	r, err := git("", "--version")
+	if err != nil || r.ExitCode != 0 {
+		return "", errors.New("git CLI not found in PATH")
+	}
+	return strings.TrimPrefix(r.Stdout, "git version "), nil
+}
+
 // RepoRoot resolves the root of the git repository containing dir,
 // erroring when dir is not inside a git work tree.
 func RepoRoot(dir string) (string, error) {
@@ -222,10 +232,10 @@ func inferDefaultBranch(root, remote string) (string, string, bool) {
 // working tree, HEAD detached at sha.
 func CloneNoCheckout(root, dest, sha string) error {
 	if r, err := git("", "clone", "--quiet", "--no-checkout", root, dest); err != nil || r.ExitCode != 0 {
-		return fmt.Errorf("clone failed: %s", r.Stderr)
+		return fmt.Errorf("clone failed: %s", execx.Cause(r, err))
 	}
 	if r, err := git(dest, "update-ref", "--no-deref", "HEAD", sha); err != nil || r.ExitCode != 0 {
-		return fmt.Errorf("cannot set baseline HEAD: %s", r.Stderr)
+		return fmt.Errorf("cannot set baseline HEAD: %s", execx.Cause(r, err))
 	}
 	return nil
 }
@@ -234,7 +244,7 @@ func CloneNoCheckout(root, dest, sha string) error {
 // repository at dir — that is, all of its prerequisite commits exist there.
 func VerifyBundle(dir, bundle string) error {
 	if r, err := git(dir, "bundle", "verify", bundle); err != nil || r.ExitCode != 0 {
-		return fmt.Errorf("bundle verify failed: %s", r.Stderr)
+		return fmt.Errorf("bundle verify failed: %s", execx.Cause(r, err))
 	}
 	return nil
 }
@@ -243,7 +253,7 @@ func VerifyBundle(dir, bundle string) error {
 // dir as a local branch of the same name.
 func FetchBundle(dir, bundle, branch string) error {
 	if r, err := git(dir, "fetch", bundle, branch+":"+branch); err != nil || r.ExitCode != 0 {
-		return fmt.Errorf("fetch from bundle failed: %s", r.Stderr)
+		return fmt.Errorf("fetch from bundle failed: %s", execx.Cause(r, err))
 	}
 	return nil
 }
@@ -253,7 +263,7 @@ func FetchBundle(dir, bundle, branch string) error {
 func CountCommits(dir, from, to string) (int, error) {
 	r, err := git(dir, "rev-list", "--count", from+".."+to)
 	if err != nil || r.ExitCode != 0 {
-		return 0, fmt.Errorf("rev-list failed: %s", r.Stderr)
+		return 0, fmt.Errorf("rev-list failed: %s", execx.Cause(r, err))
 	}
 	return strconv.Atoi(r.Stdout)
 }
@@ -268,11 +278,7 @@ func Push(dir, url, branch, token string) error {
 	r, err := execx.RunCtx(context.Background(), dir, env,
 		"git", "-c", "credential.helper=", "-c", helper, "push", url, branch+":"+branch)
 	if err != nil || r.ExitCode != 0 {
-		msg := r.Stderr
-		if msg == "" && err != nil {
-			msg = err.Error()
-		}
-		return errors.New(Redact("push failed: "+msg, token))
+		return errors.New(Redact("push failed: "+execx.Cause(r, err), token))
 	}
 	return nil
 }

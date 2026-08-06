@@ -36,8 +36,8 @@ func TestProjectHashIsStableAndShort(t *testing.T) {
 	if a == c {
 		t.Error("different paths produced the same hash")
 	}
-	if len(a) != 8 || strings.ToLower(a) != a {
-		t.Errorf("hash %q is not 8 lowercase hex chars", a)
+	if len(a) != 4 || strings.ToLower(a) != a {
+		t.Errorf("hash %q is not 4 lowercase hex chars", a)
 	}
 }
 

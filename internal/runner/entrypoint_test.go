@@ -23,6 +23,16 @@ case "${STUB_MODE:-commit}" in
     echo hello > stub.txt; git add stub.txt; git commit -q -m "feat: add stub file"
     sleep 30
     ;;
+  commit_lock)
+    echo hello > stub.txt; git add stub.txt; git commit -q -m "feat: add stub file"
+    echo more > dirty.txt
+    touch .git/index.lock
+    ;;
+  dirty_hostile)
+    printf x > 'weird "quote".txt'
+    printf y > 'back\slash.txt'
+    printf z > 'space name.txt'
+    ;;
 esac
 echo '{"type":"result","subtype":"success","num_turns":1}'
 exit "${STUB_EXIT:-0}"
@@ -201,6 +211,60 @@ func TestEntrypointBundleWriteFailureKeepsClaudeExit(t *testing.T) {
 	stdout, code := run()
 	if code != 7 {
 		t.Fatalf("exit=%d want 7 (claude failure stays visible)\n%s", code, stdout)
+	}
+}
+
+// A stale .git/index.lock — left by a git grandchild that died mid-write —
+// makes `git add -A` fail inside finish(). The salvage path must tolerate
+// that (the committed work still gets bundled) instead of aborting before
+// `git bundle create` and destroying every commit it exists to preserve.
+func TestEntrypointStaleIndexLockDoesNotDestroySalvage(t *testing.T) {
+	run, out, _ := harness(t, "commit_lock", "0")
+	stdout, code := run()
+	if code != 0 {
+		t.Fatalf("exit=%d\n%s", code, stdout)
+	}
+	bundleHasBranch(t, filepath.Join(out, "run.bundle"))
+}
+
+// The safety commit must capture filenames containing quotes, backslashes
+// and spaces — exactly the names naive shell interpolation would mangle.
+func TestEntrypointSafetyCommitHandlesHostileFilenames(t *testing.T) {
+	run, out, ws := harness(t, "dirty_hostile", "0")
+	stdout, code := run()
+	if code != 0 {
+		t.Fatalf("exit=%d\n%s", code, stdout)
+	}
+	bundleHasBranch(t, filepath.Join(out, "run.bundle"))
+	tree, err := exec.Command("git", "-C", ws, "ls-tree", "-r", "--name-only", "feature/test").CombinedOutput()
+	if err != nil {
+		t.Fatalf("ls-tree: %v\n%s", err, tree)
+	}
+	for _, want := range []string{"quote", "slash.txt", "space name.txt"} {
+		if !strings.Contains(string(tree), want) {
+			t.Errorf("safety commit lost a hostile filename (%q):\n%s", want, tree)
+		}
+	}
+}
+
+// Both traps must be installed before claude starts: a signal landing in
+// the gap would kill the shell with nothing to salvage. The window is too
+// narrow to test behaviorally, so the ordering is pinned textually — as is
+// the bash shebang, because the `& wait` trap semantics the whole salvage
+// design rests on are bash's, not POSIX sh's.
+func TestEntrypointInstallsTrapsBeforeLaunchingClaude(t *testing.T) {
+	s := string(EntrypointScript())
+	if !strings.HasPrefix(s, "#!/usr/bin/env bash") {
+		t.Fatal("entrypoint must declare bash: its trap-during-wait behavior is load-bearing")
+	}
+	exitTrap := strings.Index(s, "trap finish EXIT")
+	termTrap := strings.Index(s, "TERM INT")
+	launch := strings.Index(s, "claude -p")
+	if exitTrap < 0 || termTrap < 0 || launch < 0 {
+		t.Fatalf("marker missing: exit=%d term=%d launch=%d", exitTrap, termTrap, launch)
+	}
+	if exitTrap > launch || termTrap > launch {
+		t.Fatal("a trap is installed after claude launches — signals in the gap lose all salvage")
 	}
 }
 

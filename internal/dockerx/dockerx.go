@@ -92,7 +92,7 @@ func Build(ctx context.Context, dockerfile, contextDir, tag string, onLine func(
 	}
 	r, err := execx.Run("", "docker", "inspect", "--format", "{{.Id}}", tag)
 	if err != nil || r.ExitCode != 0 {
-		return "", fmt.Errorf("cannot inspect built image: %s", r.Stderr)
+		return "", fmt.Errorf("cannot inspect built image: %s", execx.Cause(r, err))
 	}
 	return r.Stdout, nil
 }
@@ -107,7 +107,18 @@ func RunContainer(ctx context.Context, args []string, env []string, onLine func(
 func Stop(name string) error {
 	r, err := execx.Run("", "docker", "stop", name)
 	if err != nil || r.ExitCode != 0 {
-		return fmt.Errorf("docker stop failed: %s", r.Stderr)
+		return fmt.Errorf("docker stop failed: %s", execx.Cause(r, err))
+	}
+	return nil
+}
+
+// RemoveForce kills and removes the named container (docker rm -f). This
+// is the second-interrupt path: salvage is deliberately abandoned, so the
+// container gets SIGKILL, not a grace period.
+func RemoveForce(name string) error {
+	r, err := execx.Run("", "docker", "rm", "-f", name)
+	if err != nil || r.ExitCode != 0 {
+		return fmt.Errorf("docker rm -f failed: %s", execx.Cause(r, err))
 	}
 	return nil
 }
@@ -116,7 +127,7 @@ func Stop(name string) error {
 func ListTags(repo string) ([]string, error) {
 	r, err := execx.Run("", "docker", "images", repo, "--format", "{{.Tag}}")
 	if err != nil || r.ExitCode != 0 {
-		return nil, fmt.Errorf("docker images failed: %s", r.Stderr)
+		return nil, fmt.Errorf("docker images failed: %s", execx.Cause(r, err))
 	}
 	if r.Stdout == "" {
 		return nil, nil
@@ -139,7 +150,7 @@ func PruneRepo(repo, keep string) (removed int, warnings []string, err error) {
 		}
 		r, err := execx.Run("", "docker", "rmi", repo+":"+t)
 		if err != nil || r.ExitCode != 0 {
-			warnings = append(warnings, fmt.Sprintf("could not remove %s:%s: %s", repo, t, r.Stderr))
+			warnings = append(warnings, fmt.Sprintf("could not remove %s:%s: %s", repo, t, execx.Cause(r, err)))
 			continue
 		}
 		removed++

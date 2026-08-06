@@ -2,6 +2,7 @@ package execx
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -78,6 +79,15 @@ func TestRunCtxBoundedWithLingeringChild(t *testing.T) {
 	RunCtx(ctx, "", nil, "bash", "-c", "sleep 30 & sleep 30")
 	if d := time.Since(start); d > 10*time.Second {
 		t.Fatalf("RunCtx not bounded: took %v", d)
+	}
+}
+
+func TestCause(t *testing.T) {
+	if got := Cause(Result{Stderr: "fatal: not a repo", ExitCode: 128}, nil); got != "fatal: not a repo" {
+		t.Fatalf("ran-and-failed cause = %q, want stderr", got)
+	}
+	if got := Cause(Result{}, errors.New(`exec: "git": executable file not found in $PATH`)); !strings.Contains(got, "executable file not found") {
+		t.Fatalf("could-not-run cause lost: %q", got)
 	}
 }
 

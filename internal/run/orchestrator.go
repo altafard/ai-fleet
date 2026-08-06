@@ -8,13 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/altafard/ai-fleet/internal/dockerx"
-	"github.com/altafard/ai-fleet/internal/execx"
 	"github.com/altafard/ai-fleet/internal/gitx"
 	"github.com/altafard/ai-fleet/internal/initx"
 	"github.com/altafard/ai-fleet/internal/logstream"
@@ -50,6 +48,23 @@ type state struct {
 	startedAt time.Time
 }
 
+// Test seams: external effects that need docker or a network go through
+// package variables so phase ordering, failure handling and publish are
+// testable without either (mirroring initx's seam pattern). Git operations
+// have no seam on purpose — tests use real repositories in temp dirs, the
+// codebase's convention.
+var (
+	gitVersion      = gitx.Version
+	dockerVersion   = dockerx.Version
+	buildImage      = dockerx.Build
+	runContainer    = dockerx.RunContainer
+	stopContainer   = dockerx.Stop
+	removeContainer = dockerx.RemoveForce
+	pruneRepo       = dockerx.PruneRepo
+	pushBranch      = gitx.Push
+	newProvider     = provider.New
+)
+
 // Execute performs one deploy-unit run through all of its phases —
 // preflight, image build, run snapshot, container execution, collect, and
 // (in PR mode) publish — and returns the process exit code (see the Exit
@@ -74,7 +89,7 @@ func Execute(o Options) int {
 		return fail(err)
 	}
 	s.console.Check("git " + gv)
-	dv, err := dockerx.Version()
+	dv, err := dockerVersion()
 	if err != nil {
 		return fail(err)
 	}
@@ -128,11 +143,12 @@ func Execute(o Options) int {
 
 // runPhases installs one signal watcher covering every phase (build, clone,
 // container run, collect) and runs them in sequence. On the first Ctrl-C /
-// SIGTERM: the build context is cancelled (aborting dockerx.Build), and the
-// container — if one has been started — is asked to stop gracefully so the
-// entrypoint's trap can salvage a bundle. Regardless of which phase caught
-// the signal or what that phase's own return code was, runPhases reports
-// ExitInterrupted once a signal has been observed.
+// SIGTERM / SIGHUP: the build context is cancelled (aborting dockerx.Build),
+// and the container — if one has been started — is asked to stop gracefully
+// so the entrypoint's trap can salvage a bundle. A second signal abandons
+// salvage: the container is force-removed and the process exits. Regardless
+// of which phase caught the signal or what that phase's own return code
+// was, runPhases reports ExitInterrupted once a signal has been observed.
 func runPhases(s *state) (code int) {
 	// worktree/ is a disposable template; delete it on every exit path
 	// (success or failure) regardless of which phase returned. Phases that
@@ -150,41 +166,37 @@ func runPhases(s *state) (code int) {
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
 
-	// done unblocks the watcher goroutine on normal completion: signal.Stop
-	// only stops future relaying, it does not close sigCh.
+	// done unblocks the watcher goroutine on normal completion.
 	done := make(chan struct{})
 	defer close(done)
 
 	var containerName atomic.Value // string; unset until the container starts
 
-	go func() {
-		select {
-		case <-sigCh:
-		case <-done:
-			return
-		}
-		s.stopped.Store(true)
-		cancel()
-		if name, ok := containerName.Load().(string); ok && name != "" {
-			if err := dockerx.Stop(name); err != nil {
-				fmt.Fprintln(os.Stderr, "ai-fleet: docker stop failed:", err)
+	go watchSignals(sigCh, done,
+		func() {
+			s.stopped.Store(true)
+			cancel()
+			if name, ok := containerName.Load().(string); ok && name != "" {
+				if err := stopContainer(name); err != nil {
+					fmt.Fprintln(os.Stderr, "ai-fleet: docker stop failed:", err)
+				}
 			}
-		}
-		// Second Ctrl-C: immediate kill, no salvage. Keep watching sigCh so a
-		// repeated signal is never silently dropped into the buffered channel
-		// while nobody is listening (which would otherwise make the process
-		// unkillable short of SIGKILL).
-		select {
-		case <-sigCh:
-			fmt.Fprintln(os.Stderr, "ai-fleet: second interrupt received, exiting immediately")
+		},
+		func() {
+			// Second signal: the operator wants out now. Leaving the container
+			// running unsupervised would be worse than losing the salvage, so
+			// it is force-removed before the process exits.
+			fmt.Fprintln(os.Stderr, "ai-fleet: second interrupt received, aborting")
+			if name, ok := containerName.Load().(string); ok && name != "" {
+				if err := removeContainer(name); err != nil {
+					fmt.Fprintln(os.Stderr, "ai-fleet:", err)
+				}
+			}
 			os.Exit(ExitInterrupted)
-		case <-done:
-			return
-		}
-	}()
+		})
 
 	defer func() {
 		if s.stopped.Load() {
@@ -213,7 +225,7 @@ func runPhases(s *state) (code int) {
 	buildStart := time.Now()
 	var buildTail []string
 	const buildTailMax = 10
-	s.imageID, err = dockerx.Build(ctx, s.o.Dockerfile, contextDir, tag,
+	s.imageID, err = buildImage(ctx, s.o.Dockerfile, contextDir, tag,
 		func(line string) {
 			if step, total, instr, ok := logstream.ParseBuildStep(line); ok {
 				s.console.Spin(fmt.Sprintf("building image — step %d/%d: %s", step, total, instr))
@@ -234,7 +246,7 @@ func runPhases(s *state) (code int) {
 	}
 	s.console.Done(fmt.Sprintf("image built in %s", time.Since(buildStart).Round(time.Second)))
 	if s.imageRepo != "" {
-		removed, warns, perr := dockerx.PruneRepo(s.imageRepo, dockerx.ContentTag(df))
+		removed, warns, perr := pruneRepo(s.imageRepo, dockerx.ContentTag(df))
 		for _, w := range warns {
 			s.console.Warn(w)
 		}
@@ -309,9 +321,17 @@ func runPhases(s *state) (code int) {
 	// Set before starting the container so a signal arriving during startup
 	// can never race the watcher goroutine into skipping the stop.
 	containerName.Store(name)
+	// A signal that landed before this point had no container to stop —
+	// without this re-check the session would start against an operator who
+	// already asked to quit (docker stop on a not-yet-created container is
+	// nothing but a failed command).
+	if s.stopped.Load() {
+		code = ExitInterrupted
+		return
+	}
 	s.console.Spin("container running")
 
-	exit, err := dockerx.RunContainer(context.Background(), args, env, func(line string) {
+	exit, err := runContainer(context.Background(), args, env, func(line string) {
 		s.logFile.WriteString(line + "\n")
 		s.spinClaude(line)
 	})
@@ -346,15 +366,6 @@ func (s *state) spinClaude(line string) {
 	s.turns++
 	msg, _ := logstream.ClaudeSummary(ev)
 	s.console.Spin(fmt.Sprintf("claude — turn %d: %s", s.turns, msg))
-}
-
-// gitVersion returns e.g. "2.44.0".
-func gitVersion() (string, error) {
-	r, err := execx.Run("", "git", "--version")
-	if err != nil || r.ExitCode != 0 {
-		return "", fmt.Errorf("git CLI not found in PATH")
-	}
-	return strings.TrimPrefix(r.Stdout, "git version "), nil
 }
 
 // bundleFailedExit mirrors the entrypoint's contract: commits were made but
@@ -428,7 +439,7 @@ func publish(s *state) error {
 	}
 	s.console.Check("PR composed: " + title)
 
-	p, err := provider.New(s.o.GitProvider)
+	p, err := newProvider(s.o.GitProvider)
 	if err != nil {
 		return err
 	}
@@ -437,20 +448,24 @@ func publish(s *state) error {
 		return err
 	}
 	// The bundle was already fetched into worktree/ by collect.
-	if err := gitx.Push(s.dir.Worktree(), pushURL, s.o.Branch, s.o.GitToken); err != nil {
+	if err := pushBranch(s.dir.Worktree(), pushURL, s.o.Branch, s.o.GitToken); err != nil {
 		return err
 	}
 	s.console.Check("pushed " + s.o.Branch)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	url, err := p.CreatePR(client, s.o.GitRepository, s.o.GitToken, provider.PR{
+	url, existed, err := p.CreatePR(client, s.o.GitRepository, s.o.GitToken, provider.PR{
 		Title: title, Body: body, Head: s.o.Branch, Base: s.base.Branch,
 	})
 	if err != nil {
 		return err
 	}
 	s.prURL = url
-	s.console.Check("pull request created: " + url)
+	if existed {
+		s.console.Check("pull request already exists, updated by the push: " + url)
+	} else {
+		s.console.Check("pull request created: " + url)
+	}
 	fmt.Println("Pull request:", url)
 	return nil
 }
