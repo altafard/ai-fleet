@@ -12,10 +12,10 @@ import (
 )
 
 // invalidComponent matches every character not allowed in a Docker
-// repository name component; separatorRun matches separator sequences the
-// reference grammar rejects. Docker only accepts ".", "_", "__" or a run of
-// "-" between alphanumeric runs, so anything longer than one character
-// collapses to a single "-", which is always valid.
+// repository name component; separatorRun matches the separator sequences
+// Docker's reference grammar rejects. Only ".", "_", "__" and runs of "-"
+// are legal between alphanumeric runs, so every multi-character run becomes
+// a single "-" — giving up the legal "__" buys a rule that always holds.
 var (
 	invalidComponent = regexp.MustCompile(`[^a-z0-9._-]`)
 	separatorRun     = regexp.MustCompile(`[._-]{2,}`)
