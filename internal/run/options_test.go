@@ -84,3 +84,26 @@ func TestPRMode(t *testing.T) {
 		t.Fatal("want true with all PR flags")
 	}
 }
+
+func TestExportedValidators(t *testing.T) {
+	cases := []struct {
+		model, effort string
+		wantM, wantE  bool
+	}{
+		{"opus", "high", true, true},
+		{"opus[1m]", "max", true, true},
+		{"claude-opus-5", "low", true, true},
+		{"bad model", "medium", false, true},
+		{"-leading", "xhigh", false, true},
+		{"opus", "ultra", true, false},
+		{"opus", "", true, false},
+	}
+	for _, c := range cases {
+		if got := ValidModel(c.model); got != c.wantM {
+			t.Errorf("ValidModel(%q) = %v, want %v", c.model, got, c.wantM)
+		}
+		if got := ValidEffort(c.effort); got != c.wantE {
+			t.Errorf("ValidEffort(%q) = %v, want %v", c.effort, got, c.wantE)
+		}
+	}
+}

@@ -57,10 +57,10 @@ func (o *Options) Validate() error {
 	if o.Model == "" || o.Effort == "" {
 		return errors.New("--model and --effort are required")
 	}
-	if !modelRe.MatchString(o.Model) {
+	if !ValidModel(o.Model) {
 		return fmt.Errorf("invalid --model %q: allowed characters are A-Z a-z 0-9 . _ [ ] -", o.Model)
 	}
-	if !effortLevels[o.Effort] {
+	if !ValidEffort(o.Effort) {
 		return fmt.Errorf("invalid --effort %q: must be one of low, medium, high, xhigh, max", o.Effort)
 	}
 	if o.Branch != "" && !branchRe.MatchString(o.Branch) {
@@ -87,3 +87,10 @@ func (o *Options) Validate() error {
 func (o *Options) PRMode() bool {
 	return o.GitProvider != "" && o.GitRepository != "" && o.GitToken != ""
 }
+
+// ValidModel reports whether s has the shape of a claude model reference.
+// Shape only — model validity is claude's concern (see modelRe).
+func ValidModel(s string) bool { return modelRe.MatchString(s) }
+
+// ValidEffort reports whether s is one of the claude CLI's effort levels.
+func ValidEffort(s string) bool { return effortLevels[s] }
