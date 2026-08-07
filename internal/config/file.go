@@ -12,9 +12,13 @@ func LocalPath(root string) string {
 	return filepath.Join(root, ".ai-fleet", "ai-fleet.ini")
 }
 
-// GlobalPath is the user-scope config file. Same name and format as the
-// local file, minus [project].
+// GlobalPath is the user-scope config file: $AI_FLEET_HOME/ai-fleet.ini,
+// where AI_FLEET_HOME names the global ai-fleet directory and defaults to
+// ~/.ai-fleet. Same name and format as the local file, minus [project].
 func GlobalPath() (string, error) {
+	if dir := os.Getenv("AI_FLEET_HOME"); dir != "" {
+		return filepath.Join(dir, "ai-fleet.ini"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

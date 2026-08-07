@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/altafard/ai-fleet/internal/config"
@@ -179,17 +180,17 @@ func applyConfig(o *run.Options) error {
 		local = l
 	}
 	var globalM map[string]string
-	home, herr := os.UserHomeDir()
+	globalBase := ""
 	if gp, err := config.GlobalPath(); err == nil {
 		g, err := config.Load(gp)
 		if err != nil {
 			return err
 		}
 		globalM = g
+		// Relative key paths in the global scope resolve against the
+		// directory the global config lives in (AI_FLEET_HOME).
+		globalBase = filepath.Dir(gp)
 	}
-	if herr != nil {
-		home = ""
-	}
-	config.Apply(o, config.Merge(local, globalM, root, home))
+	config.Apply(o, config.Merge(local, globalM, root, globalBase))
 	return nil
 }

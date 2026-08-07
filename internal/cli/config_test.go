@@ -29,6 +29,9 @@ func runConfig(t *testing.T, args ...string) (string, int) {
 // initProject creates a git repo with an initialized .ai-fleet and chdirs in.
 func initProject(t *testing.T) string {
 	t.Helper()
+	// These tests pin the global scope through HOME; a developer's exported
+	// AI_FLEET_HOME must not leak in and redirect it.
+	t.Setenv("AI_FLEET_HOME", "")
 	root := t.TempDir()
 	// gitx.RepoRoot reports the physical path (git resolves symlinks); resolve
 	// macOS's /var -> /private/var here so callers can compare paths directly.
@@ -91,6 +94,44 @@ func TestConfigGlobalScopeAndMergedGet(t *testing.T) {
 	out, _ = runConfig(t, "config", "get", "--global", "agent.effort")
 	if strings.TrimSpace(out) != "high" {
 		t.Fatalf("--global get: %q", out)
+	}
+}
+
+func TestConfigGlobalScopeHonorsAIFleetHome(t *testing.T) {
+	fleetHome := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	initProject(t) // pins AI_FLEET_HOME="" — overridden below on purpose
+	t.Setenv("AI_FLEET_HOME", fleetHome)
+
+	if _, code := runConfig(t, "config", "set", "--global", "agent.model", "opus"); code != 0 {
+		t.Fatal("global set failed")
+	}
+	if _, err := os.Stat(filepath.Join(fleetHome, "ai-fleet.ini")); err != nil {
+		t.Fatalf("global config not written under AI_FLEET_HOME: %v", err)
+	}
+	out, code := runConfig(t, "config", "get", "--global", "agent.model")
+	if code != 0 || strings.TrimSpace(out) != "opus" {
+		t.Fatalf("get --global: %q code %d", out, code)
+	}
+}
+
+// A relative private key in the global config must resolve against the
+// directory the global config lives in — AI_FLEET_HOME — not against $HOME.
+func TestApplyConfigResolvesGlobalKeyAgainstFleetHome(t *testing.T) {
+	fleetHome := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	root := initProject(t) // pins AI_FLEET_HOME="" — overridden below on purpose
+	t.Setenv("AI_FLEET_HOME", fleetHome)
+
+	if _, code := runConfig(t, "config", "set", "--global", "git.app.private-key", "keys/bot.pem"); code != 0 {
+		t.Fatal("global set failed")
+	}
+	o := run.Options{Project: root}
+	if err := applyConfig(&o); err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(fleetHome, "keys", "bot.pem"); o.GitAppPrivateKey != want {
+		t.Fatalf("key path = %q, want %q", o.GitAppPrivateKey, want)
 	}
 }
 
@@ -182,6 +223,7 @@ func TestApplyConfigPrecedence(t *testing.T) {
 
 func TestApplyConfigOutsideRepoIsNoOpForLocal(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("AI_FLEET_HOME", "")
 	t.Setenv("HOME", home)
 	dir := t.TempDir()
 	t.Chdir(dir)

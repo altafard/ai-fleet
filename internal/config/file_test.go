@@ -80,9 +80,15 @@ func TestPaths(t *testing.T) {
 	if got := LocalPath("/repo"); got != filepath.Join("/repo", ".ai-fleet", "ai-fleet.ini") {
 		t.Fatalf("LocalPath = %q", got)
 	}
+	t.Setenv("AI_FLEET_HOME", "")
 	t.Setenv("HOME", "/home/u")
 	gp, err := GlobalPath()
 	if err != nil || gp != filepath.Join("/home/u", ".ai-fleet", "ai-fleet.ini") {
 		t.Fatalf("GlobalPath = %q, %v", gp, err)
+	}
+	t.Setenv("AI_FLEET_HOME", "/etc/ai-fleet")
+	gp, err = GlobalPath()
+	if err != nil || gp != filepath.Join("/etc/ai-fleet", "ai-fleet.ini") {
+		t.Fatalf("GlobalPath with AI_FLEET_HOME = %q, %v", gp, err)
 	}
 }

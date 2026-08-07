@@ -19,8 +19,8 @@ func TestMergeResolvesPrivateKeyAgainstItsScope(t *testing.T) {
 	if m["git.app.private-key"] != filepath.Join("/repo", ".ai-fleet", "bot.pem") {
 		t.Fatalf("local-relative: %q", m["git.app.private-key"])
 	}
-	m = Merge(nil, map[string]string{"git.app.private-key": "keys/bot.pem"}, "/repo", "/home/u")
-	if m["git.app.private-key"] != filepath.Join("/home/u", "keys", "bot.pem") {
+	m = Merge(nil, map[string]string{"git.app.private-key": "keys/bot.pem"}, "/repo", "/fleet-home")
+	if m["git.app.private-key"] != filepath.Join("/fleet-home", "keys", "bot.pem") {
 		t.Fatalf("global-relative: %q", m["git.app.private-key"])
 	}
 	abs := filepath.Join("/abs", "bot.pem")

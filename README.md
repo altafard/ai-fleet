@@ -34,9 +34,10 @@ Flags you'd otherwise pass every time can be stored instead:
     ai-fleet config list
 
 `set` with no value removes the key. Add `--global` to any subcommand to
-operate on `~/.ai-fleet/ai-fleet.ini` instead of the project's
-`.ai-fleet/ai-fleet.ini` (which requires `ai-fleet init` first). Precedence
-when `ai-fleet deploy unit` runs is:
+operate on the global file, `$AI_FLEET_HOME/ai-fleet.ini` (`AI_FLEET_HOME`
+defaults to `~/.ai-fleet`), instead of the project's `.ai-fleet/ai-fleet.ini`
+(which requires `ai-fleet init` first). Precedence when
+`ai-fleet deploy unit` runs is:
 
     flag > environment > local > global
 
@@ -51,7 +52,7 @@ when `ai-fleet deploy unit` runs is:
 | `git.author.email` | git author email for run commits |
 | `git.token` | auth token (`user` type only; prefer `AI_FLEET_GIT_TOKEN`) |
 | `git.app.id` | GitHub App ID (`bot` type) |
-| `git.app.private-key` | path to the App's RSA PEM; relative paths resolve against the repo root (local scope) or `$HOME` (global scope) |
+| `git.app.private-key` | path to the App's RSA PEM; relative paths resolve against the repo root (local scope) or `$AI_FLEET_HOME` (global scope) |
 | `git.app.installation-id` | GitHub App installation ID; optional, discovered if unset |
 
 ## Versioning and releases
