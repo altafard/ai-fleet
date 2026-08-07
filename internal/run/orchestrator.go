@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -63,6 +64,23 @@ var (
 	pruneRepo       = dockerx.PruneRepo
 	pushBranch      = gitx.Push
 	newProvider     = provider.New
+
+	// checkAppKey is the cheap, offline half of bot-credential preflight: it
+	// only proves the PEM is readable and well-formed, so a doomed run fails
+	// in seconds. Minting itself (installationToken) happens at publish
+	// time, not here — the installation token's ~1-hour lifetime must not be
+	// spent sitting idle through a whole session.
+	checkAppKey = func(path string) error {
+		_, err := provider.LoadRSAPrivateKey(path)
+		return err
+	}
+	installationToken = func(p provider.Provider, client *http.Client, o *Options) (string, error) {
+		gh, ok := p.(*provider.GitHub)
+		if !ok {
+			return "", errors.New("bot credentials require the github provider")
+		}
+		return gh.InstallationToken(client, o.GitRepository, o.GitAppID, o.GitAppPrivateKey, o.GitAppInstallationID)
+	}
 )
 
 // Execute performs one deploy-unit run through all of its phases —
@@ -114,6 +132,15 @@ func Execute(o Options) int {
 	}
 	if _, err := os.Stat(s.o.Dockerfile); err != nil {
 		return fail(fmt.Errorf("dockerfile not found: %s", s.o.Dockerfile))
+	}
+	// Bot credentials preflight: the cheap, offline part only. A doomed run
+	// must fail in seconds, not after a full session; minting itself happens
+	// at publish so the token's 1-hour lifetime cannot expire mid-run.
+	if o.PRMode() && o.BotMode() {
+		if err := checkAppKey(o.GitAppPrivateKey); err != nil {
+			return fail(fmt.Errorf("git app private key: %w", err))
+		}
+		s.console.Check("git app private key ok")
 	}
 	// Baseline resolution is a preflight concern too: an unresolvable default
 	// branch is an environment problem (exit 2), and nothing has been created
@@ -443,18 +470,27 @@ func publish(s *state) error {
 	if err != nil {
 		return err
 	}
-	pushURL, err := p.PushURL(s.o.GitRepository, s.o.GitToken)
+	client := &http.Client{Timeout: 30 * time.Second}
+	token := s.o.GitToken
+	if s.o.BotMode() {
+		t, err := installationToken(p, client, &s.o)
+		if err != nil {
+			return err
+		}
+		token = t
+		s.console.Check("installation token minted")
+	}
+	pushURL, err := p.PushURL(s.o.GitRepository, token)
 	if err != nil {
 		return err
 	}
 	// The bundle was already fetched into worktree/ by collect.
-	if err := pushBranch(s.dir.Worktree(), pushURL, s.o.Branch, s.o.GitToken); err != nil {
+	if err := pushBranch(s.dir.Worktree(), pushURL, s.o.Branch, token); err != nil {
 		return err
 	}
 	s.console.Check("pushed " + s.o.Branch)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	url, existed, err := p.CreatePR(client, s.o.GitRepository, s.o.GitToken, provider.PR{
+	url, existed, err := p.CreatePR(client, s.o.GitRepository, token, provider.PR{
 		Title: title, Body: body, Head: s.o.Branch, Base: s.base.Branch,
 	})
 	if err != nil {

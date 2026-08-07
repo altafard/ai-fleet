@@ -20,10 +20,10 @@ import (
 // execDeps records every seam invocation so tests can assert on ordering
 // and call counts, not just on outcomes.
 type execDeps struct {
-	gitCalls, dockerCalls, buildCalls, runCalls, pushCalls int
-	runArgs                                                []string
-	pushURL, pushToken                                     string
-	prov                                                   *fakeProvider
+	gitCalls, dockerCalls, buildCalls, runCalls, pushCalls, mintCalls int
+	runArgs                                                           []string
+	pushURL, pushToken                                                string
+	prov                                                              *fakeProvider
 }
 
 // stubExec replaces every seam with a canned success; individual tests
@@ -35,11 +35,13 @@ func stubExec(t *testing.T) *execDeps {
 	origBuild, origRun := buildImage, runContainer
 	origStop, origRemove, origPrune := stopContainer, removeContainer, pruneRepo
 	origPush, origProv := pushBranch, newProvider
+	origCheckAppKey, origInstallationToken := checkAppKey, installationToken
 	t.Cleanup(func() {
 		gitVersion, dockerVersion = origGit, origDocker
 		buildImage, runContainer = origBuild, origRun
 		stopContainer, removeContainer, pruneRepo = origStop, origRemove, origPrune
 		pushBranch, newProvider = origPush, origProv
+		checkAppKey, installationToken = origCheckAppKey, origInstallationToken
 	})
 	gitVersion = func() (string, error) { d.gitCalls++; return "2.47.0", nil }
 	dockerVersion = func() (string, error) { d.dockerCalls++; return "28.0.0", nil }
@@ -65,6 +67,11 @@ func stubExec(t *testing.T) *execDeps {
 			return nil, fmt.Errorf("unsupported git provider %q", name)
 		}
 		return d.prov, nil
+	}
+	checkAppKey = func(path string) error { return nil }
+	installationToken = func(p provider.Provider, c *http.Client, o *Options) (string, error) {
+		d.mintCalls++
+		return "ghs_minted", nil
 	}
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-test-token")
 	return d
@@ -448,5 +455,65 @@ func TestExecuteSignalBeforeLaunchSkipsContainer(t *testing.T) {
 	st := readStatus(t, fx.root)
 	if st["exit_code"] != float64(ExitInterrupted) {
 		t.Fatalf("status.json: %v", st)
+	}
+}
+
+// botOptions builds Options for a PR-mode run authenticated as a GitHub App
+// bot (git.type = "bot"), on top of validOptions.
+func botOptions(t *testing.T, fx collectFixture) Options {
+	o := validOptions(t, fx)
+	o.GitProvider, o.GitRepository = "github", "o/r"
+	o.GitEntityType, o.GitAppID, o.GitAppPrivateKey = "bot", "123", "/k.pem"
+	return o
+}
+
+func TestExecuteBotPreflightFailsBeforeBuild(t *testing.T) {
+	fx := newCollectFixture(t)
+	d := stubExec(t)
+	checkAppKey = func(path string) error { return errors.New("no such file: " + path) }
+	var code int
+	out := captureOutput(t, func() { code = Execute(botOptions(t, fx)) })
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d\n%s", code, ExitUsage, out)
+	}
+	if d.buildCalls != 0 {
+		t.Fatal("a doomed bot run must fail before any build")
+	}
+}
+
+func TestExecuteBotPublishMintsToken(t *testing.T) {
+	fx := newCollectFixture(t)
+	d := stubExec(t)
+	simulateSession(t, d, fx, 0, true)
+	var code int
+	out := captureOutput(t, func() { code = Execute(botOptions(t, fx)) })
+	if code != ExitOK {
+		t.Fatalf("exit = %d\n%s", code, out)
+	}
+	if d.mintCalls != 1 {
+		t.Fatalf("mint called %d times, want 1", d.mintCalls)
+	}
+	if d.pushToken != "ghs_minted" {
+		t.Fatalf("push used %q, want the minted token", d.pushToken)
+	}
+	if strings.Contains(out, "ghs_minted") {
+		t.Fatal("minted token leaked into output")
+	}
+}
+
+func TestExecuteBotMintFailureIsRunFailure(t *testing.T) {
+	fx := newCollectFixture(t)
+	d := stubExec(t)
+	simulateSession(t, d, fx, 0, true)
+	installationToken = func(p provider.Provider, c *http.Client, o *Options) (string, error) {
+		return "", errors.New("app is not installed on o/r")
+	}
+	var code int
+	captureOutput(t, func() { code = Execute(botOptions(t, fx)) })
+	if code != ExitFailure {
+		t.Fatalf("exit = %d, want %d", code, ExitFailure)
+	}
+	if d.pushCalls != 0 {
+		t.Fatal("push must not run without a token")
 	}
 }
