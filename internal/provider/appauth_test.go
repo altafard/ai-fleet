@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,5 +82,81 @@ func TestAppJWTClaimsAndSignature(t *testing.T) {
 	}
 	if claims.Iss != "12345" || claims.Iat != now.Add(-60*time.Second).Unix() || claims.Exp != now.Add(9*time.Minute).Unix() {
 		t.Fatalf("claims = %+v", claims)
+	}
+}
+
+func TestInstallationTokenWithDiscovery(t *testing.T) {
+	pemPath, _ := writeTestKey(t, false)
+	var discovered, minted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ey") {
+			t.Errorf("no JWT bearer on %s: %q", r.URL.Path, auth)
+		}
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/o/r/installation":
+			discovered = true
+			json.NewEncoder(w).Encode(map[string]int{"id": 42})
+		case r.Method == "POST" && r.URL.Path == "/app/installations/42/access_tokens":
+			minted = true
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["permissions"] == nil {
+				t.Error("permissions not requested")
+			}
+			w.WriteHeader(201)
+			json.NewEncoder(w).Encode(map[string]string{"token": "ghs_test"})
+		default:
+			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	gh := &GitHub{APIBase: srv.URL}
+	tok, err := gh.InstallationToken(srv.Client(), "o/r", "12345", pemPath, "")
+	if err != nil || tok != "ghs_test" {
+		t.Fatalf("token = %q, err = %v", tok, err)
+	}
+	if !discovered || !minted {
+		t.Fatal("discovery or mint skipped")
+	}
+}
+
+func TestInstallationTokenExplicitIDSkipsDiscovery(t *testing.T) {
+	pemPath, _ := writeTestKey(t, false)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/7/access_tokens" {
+			t.Errorf("unexpected call %s", r.URL.Path)
+		}
+		w.WriteHeader(201)
+		json.NewEncoder(w).Encode(map[string]string{"token": "ghs_x"})
+	}))
+	defer srv.Close()
+	gh := &GitHub{APIBase: srv.URL}
+	if tok, err := gh.InstallationToken(srv.Client(), "o/r", "1", pemPath, "7"); err != nil || tok != "ghs_x" {
+		t.Fatalf("token = %q, err = %v", tok, err)
+	}
+}
+
+func TestInstallationTokenErrors(t *testing.T) {
+	pemPath, _ := writeTestKey(t, false)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(403)
+		w.Write([]byte(`{"message":"forbidden"}`))
+	}))
+	defer srv.Close()
+	gh := &GitHub{APIBase: srv.URL}
+
+	_, err := gh.InstallationToken(srv.Client(), "o/r", "1", pemPath, "")
+	if err == nil || !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("404 discovery: %v", err)
+	}
+	_, err = gh.InstallationToken(srv.Client(), "o/r", "1", pemPath, "7")
+	if err == nil || !strings.Contains(err.Error(), "contents") {
+		t.Fatalf("403 exchange must name the permissions: %v", err)
 	}
 }

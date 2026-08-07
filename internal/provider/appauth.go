@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -11,6 +12,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"time"
 )
@@ -62,4 +65,78 @@ func appJWT(key *rsa.PrivateKey, appID string, now time.Time) (string, error) {
 		return "", err
 	}
 	return signing + "." + b64(sig), nil
+}
+
+// InstallationToken mints a GitHub App installation access token for repo:
+// app JWT → installation lookup (unless installationID is given) → token
+// exchange. Called at publish time so the token's fixed 1-hour lifetime
+// cannot expire mid-run. The token and the JWT must never reach argv,
+// errors, or logs.
+func (g *GitHub) InstallationToken(client *http.Client, repo, appID, pemPath, installationID string) (string, error) {
+	owner, name, err := g.parseRepo(repo)
+	if err != nil {
+		return "", err
+	}
+	key, err := LoadRSAPrivateKey(pemPath)
+	if err != nil {
+		return "", err
+	}
+	jwt, err := appJWT(key, appID, time.Now())
+	if err != nil {
+		return "", err
+	}
+	do := func(method, url string, body []byte) (int, []byte, error) {
+		req, err := http.NewRequest(method, url, bytes.NewReader(body))
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+jwt)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return resp.StatusCode, b, nil
+	}
+
+	if installationID == "" {
+		code, body, err := do("GET", fmt.Sprintf("%s/repos/%s/%s/installation", g.APIBase, owner, name), nil)
+		if err != nil {
+			return "", err
+		}
+		if code == http.StatusNotFound {
+			return "", fmt.Errorf("github app %s is not installed on %s/%s", appID, owner, name)
+		}
+		if code != http.StatusOK {
+			return "", fmt.Errorf("installation lookup failed: %d %s", code, body)
+		}
+		var inst struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal(body, &inst); err != nil || inst.ID == 0 {
+			return "", fmt.Errorf("unexpected installation response: %s", body)
+		}
+		installationID = fmt.Sprint(inst.ID)
+	}
+
+	payload := []byte(`{"permissions":{"contents":"write","pull_requests":"write"}}`)
+	code, body, err := do("POST", fmt.Sprintf("%s/app/installations/%s/access_tokens", g.APIBase, installationID), payload)
+	if err != nil {
+		return "", err
+	}
+	if code == http.StatusForbidden {
+		return "", fmt.Errorf("installation %s lacks a required permission (contents: write, pull_requests: write): %s", installationID, body)
+	}
+	if code != http.StatusCreated {
+		return "", fmt.Errorf("installation token exchange failed: %d %s", code, body)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.Token == "" {
+		return "", errors.New("unexpected token response from github")
+	}
+	return out.Token, nil
 }
