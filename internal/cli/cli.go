@@ -1,4 +1,4 @@
-// Package cli wires the cobra command tree; all behavior lives in internal/run.
+// Package cli wires the cobra command tree; behavior lives in the feature packages (internal/run, internal/initx, internal/config).
 package cli
 
 import (

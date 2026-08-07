@@ -73,6 +73,12 @@ func appJWT(key *rsa.PrivateKey, appID string, now time.Time) (string, error) {
 // cannot expire mid-run. The token and the JWT must never reach argv,
 // errors, or logs.
 func (g *GitHub) InstallationToken(client *http.Client, repo, appID, pemPath, installationID string) (string, error) {
+	// installationID can arrive from a hand-edited config file — schema
+	// validation only runs at `config set` time, not on Load/Apply — so it
+	// must be checked here, before it reaches a URL, not just at the CLI edge.
+	if installationID != "" && !isDigits(installationID) {
+		return "", fmt.Errorf("invalid installation id %q: must be a number", installationID)
+	}
 	owner, name, err := g.parseRepo(repo)
 	if err != nil {
 		return "", err
@@ -139,4 +145,14 @@ func (g *GitHub) InstallationToken(client *http.Client, repo, appID, pemPath, in
 		return "", errors.New("unexpected token response from github")
 	}
 	return out.Token, nil
+}
+
+// isDigits reports whether s is non-empty and contains only ASCII digits.
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

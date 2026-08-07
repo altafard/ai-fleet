@@ -90,7 +90,7 @@ func (o *Options) Validate() error {
 			return fmt.Errorf("invalid git.type %q: must be \"user\" or \"bot\"", o.GitEntityType)
 		}
 		if o.BotMode() && o.GitToken != "" {
-			return errors.New("git.type is \"bot\": git.token must not be set (bot auth uses git.app.id and git.app.private-key)")
+			return errors.New("git.type is \"bot\": a git token must not be set (check --git-token, the AI_FLEET_GIT_TOKEN environment variable, and git.token in config; bot auth uses git.app.id and git.app.private-key)")
 		}
 		if !o.BotMode() && (o.GitAppID != "" || o.GitAppPrivateKey != "" || o.GitAppInstallationID != "") {
 			return errors.New("git.app.* settings require git.type = \"bot\"")

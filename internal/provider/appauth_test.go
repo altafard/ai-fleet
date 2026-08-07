@@ -160,3 +160,21 @@ func TestInstallationTokenErrors(t *testing.T) {
 		t.Fatalf("403 exchange must name the permissions: %v", err)
 	}
 }
+
+// TestInstallationTokenRejectsNonNumericID guards against a hand-edited
+// git.app.installation-id reaching the URL uninterpolated-validated: schema
+// validation only runs at `config set` time, not on Load/Apply. The server
+// must never see a request — a non-numeric ID is rejected before any call.
+func TestInstallationTokenRejectsNonNumericID(t *testing.T) {
+	pemPath, _ := writeTestKey(t, false)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected HTTP call for non-numeric installation id: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+	gh := &GitHub{APIBase: srv.URL}
+
+	_, err := gh.InstallationToken(srv.Client(), "o/r", "1", pemPath, "42; rm -rf /")
+	if err == nil || !strings.Contains(err.Error(), `invalid installation id "42; rm -rf /": must be a number`) {
+		t.Fatalf("err = %v, want invalid installation id error", err)
+	}
+}

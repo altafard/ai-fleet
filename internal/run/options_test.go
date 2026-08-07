@@ -132,7 +132,7 @@ func TestValidateBotCredentials(t *testing.T) {
 		{"bot missing app creds", func(o *Options) { o.GitEntityType = "bot" }, "git.app.id and git.app.private-key"},
 		{"bot with token", func(o *Options) {
 			o.GitEntityType, o.GitAppID, o.GitAppPrivateKey, o.GitToken = "bot", "123", "/k.pem", "tok"
-		}, "git.token must not be set"},
+		}, "AI_FLEET_GIT_TOKEN"},
 		{"user with app creds", func(o *Options) { o.GitAppID = "123" }, "require git.type"},
 		{"bad type", func(o *Options) { o.GitEntityType = "robot" }, "git.type"},
 		{"user missing token", func(o *Options) {}, "needs a token"},
