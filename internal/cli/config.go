@@ -8,6 +8,7 @@ import (
 
 	"github.com/altafard/ai-fleet/internal/config"
 	"github.com/altafard/ai-fleet/internal/gitx"
+	"github.com/altafard/ai-fleet/internal/run"
 	"github.com/spf13/cobra"
 )
 
@@ -160,4 +161,35 @@ func newConfigCmd(code *int) *cobra.Command {
 	c.PersistentFlags().BoolVar(&global, "global", false, "operate on ~/.ai-fleet/ai-fleet.ini instead of the project")
 	c.AddCommand(get, set, list)
 	return c
+}
+
+// applyConfig fills still-empty deploy options from config. Called after
+// flag/env binding, so precedence is flag > env > local > global. A
+// missing or unregistered project is not an error here — run.Execute's
+// preflight owns that reporting; a *malformed* config file is (exit 2).
+func applyConfig(o *run.Options) error {
+	var local map[string]string
+	root := ""
+	if r, err := gitx.RepoRoot(o.Project); err == nil {
+		root = r
+		l, err := config.Load(config.LocalPath(root))
+		if err != nil {
+			return err
+		}
+		local = l
+	}
+	var globalM map[string]string
+	home, herr := os.UserHomeDir()
+	if gp, err := config.GlobalPath(); err == nil {
+		g, err := config.Load(gp)
+		if err != nil {
+			return err
+		}
+		globalM = g
+	}
+	if herr != nil {
+		home = ""
+	}
+	config.Apply(o, config.Merge(local, globalM, root, home))
+	return nil
 }

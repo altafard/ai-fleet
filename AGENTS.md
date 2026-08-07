@@ -20,10 +20,11 @@ go vet ./...
 
 ## Architecture
 
-`internal/cli` only wires the cobra tree; all behavior lives in the feature packages. Two commands:
+`internal/cli` only wires the cobra tree; all behavior lives in the feature packages. Three commands:
 
 - **`ai-fleet init`** → `internal/initx.Execute`. Stages, strictly ordered so nothing touches disk before analysis succeeds: toolchain checks (git/claude/docker versions) → repo-root resolution → already-initialized check (`.ai-fleet/ai-fleet.ini` is the marker, not the folder — deploy runs create `.ai-fleet/runs/` on their own) → inventory analysis (host-side `claude -p` with the embedded `inventory-prompt.md`, strict JSON parsing, fail fast, no fallback/retry/timeout) → write `.ai-fleet/` files (allowlist `.gitignore`, machine-local `ai-fleet.ini`, generated `<name>.ai-fleet.dockerfile` from `dockerfile.tmpl`) → prebuild image + prune stale tags.
-- **`ai-fleet deploy unit`** → `internal/run.Execute`. Phases: preflight → image build → run snapshot (`.ai-fleet/runs/<run-id>/` with rendered prompt + entrypoint) → container run → collect → optional PR publish. The container's stdout (claude stream-json) is written verbatim to `out/log.jsonl`.
+- **`ai-fleet deploy unit`** → `internal/run.Execute`. Phases: preflight → image build → run snapshot (`.ai-fleet/runs/<run-id>/` with rendered prompt + entrypoint) → container run → collect → optional PR publish. The container's stdout (claude stream-json) is written verbatim to `out/log.jsonl`. Flags fall back to config (`internal/config`) when unset: flag > environment > local > global.
+- **`ai-fleet config get|set|list`** → `internal/cli/config.go`, wiring only. Reads and writes the `[agent]`/`[git]` sections of `ai-fleet.ini`, local (`.ai-fleet/ai-fleet.ini`, requires `ai-fleet init`) or global (`~/.ai-fleet/ai-fleet.ini`, `--global`) scope.
 
 Cross-cutting packages:
 
@@ -32,6 +33,7 @@ Cross-cutting packages:
 - `internal/logstream` — console rendering (✓/✗/! lines, in-place spinner) plus parsers for docker build steps and claude stream-json events.
 - `internal/runner` — embedded container-side assets: `prompt.md.tmpl` (the headless task briefing), `guidelines.md`, `entrypoint.sh`.
 - `internal/provider` — PR publication (`github` in v1).
+- `internal/config` — persistent settings (`[agent]`/`[git]` sections of `ai-fleet.ini`, local + global scope, closed schema); `config` owns those sections, `initx` owns `[project]`.
 
 ## Contracts that must not break
 

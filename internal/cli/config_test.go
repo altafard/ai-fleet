@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/altafard/ai-fleet/internal/run"
 )
 
 // runConfig executes the root command with args; returns stdout and code.
@@ -28,6 +30,11 @@ func runConfig(t *testing.T, args ...string) (string, int) {
 func initProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	// gitx.RepoRoot reports the physical path (git resolves symlinks); resolve
+	// macOS's /var -> /private/var here so callers can compare paths directly.
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 	cmd := exec.Command("git", "init", "-q", "-b", "main")
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -144,5 +151,55 @@ func TestConfigSetConflictWithinScope(t *testing.T) {
 	runConfig(t, "config", "set", "git.type", "user")
 	if _, code := runConfig(t, "config", "set", "git.app.id", "123"); code != 2 {
 		t.Fatal("app.* under type=user must be code 2")
+	}
+}
+
+func TestApplyConfigPrecedence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := initProject(t)
+
+	runConfig(t, "config", "set", "--global", "agent.model", "sonnet")
+	runConfig(t, "config", "set", "agent.model", "opus") // local wins over global
+	runConfig(t, "config", "set", "agent.effort", "high")
+	runConfig(t, "config", "set", "git.token", "from-config")
+	runConfig(t, "config", "set", "git.app.private-key", ".ai-fleet/bot.pem")
+
+	o := run.Options{Project: root, GitToken: "from-env"} // env already bound, must win
+	if err := applyConfig(&o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Model != "opus" || o.Effort != "high" {
+		t.Fatalf("config not applied: %+v", o)
+	}
+	if o.GitToken != "from-env" {
+		t.Fatalf("env must beat local config: %q", o.GitToken)
+	}
+	if o.GitAppPrivateKey != filepath.Join(root, ".ai-fleet", "bot.pem") {
+		t.Fatalf("key path not resolved against the repo root: %q", o.GitAppPrivateKey)
+	}
+}
+
+func TestApplyConfigOutsideRepoIsNoOpForLocal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	// global still applies; the missing local scope is not an error here —
+	// run.Execute's preflight owns reporting an unusable project.
+	o := run.Options{Project: dir}
+	if err := applyConfig(&o); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyConfigParseErrorIsReported(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := initProject(t)
+	os.WriteFile(filepath.Join(root, ".ai-fleet", "ai-fleet.ini"),
+		[]byte("[project]\nname = p\nhash = h\n[agent]\nmodel opus\n"), 0o644)
+	o := run.Options{Project: root}
+	if err := applyConfig(&o); err == nil || !strings.Contains(err.Error(), "line") {
+		t.Fatalf("parse error must surface with a line number: %v", err)
 	}
 }
