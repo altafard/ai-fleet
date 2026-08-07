@@ -57,3 +57,47 @@ func TestParseOwnedMalformedLineInOwnedSection(t *testing.T) {
 		t.Fatalf("want line-numbered error, got %v", err)
 	}
 }
+
+func TestSetLineUpdatesInPlacePreservingEverythingElse(t *testing.T) {
+	got := SetLine(sampleINI, "agent.model", "sonnet")
+	want := strings.Replace(sampleINI, "model = opus", "model = sonnet", 1)
+	if got != want {
+		t.Fatalf("surgical update changed more than one line:\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestSetLineInsertsAfterSectionHeader(t *testing.T) {
+	got := SetLine(sampleINI, "git.token", "ghp_x")
+	if !strings.Contains(got, "[git]\ntoken = ghp_x\n; identity\n") {
+		t.Fatalf("insert not after header:\n%q", got)
+	}
+	// nothing else moved
+	if !strings.Contains(got, "name = ai-fleet") || !strings.Contains(got, "# machine-local registration") {
+		t.Fatal("foreign content disturbed")
+	}
+}
+
+func TestSetLineAppendsMissingSection(t *testing.T) {
+	got := SetLine("[project]\nname = x\nhash = y\n", "agent.model", "opus")
+	if !strings.HasSuffix(got, "\n[agent]\nmodel = opus\n") {
+		t.Fatalf("missing section not appended:\n%q", got)
+	}
+}
+
+func TestSetLineOnEmptyContent(t *testing.T) {
+	got := SetLine("", "agent.model", "opus")
+	if got != "[agent]\nmodel = opus\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRemoveLine(t *testing.T) {
+	got := RemoveLine(sampleINI, "agent.effort")
+	want := strings.Replace(sampleINI, "effort = high\n", "", 1)
+	if got != want {
+		t.Fatalf("remove touched more than the key line:\n%q", got)
+	}
+	if RemoveLine(sampleINI, "git.token") != sampleINI {
+		t.Fatal("removing an absent key must be a no-op")
+	}
+}
