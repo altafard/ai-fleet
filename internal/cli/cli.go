@@ -77,6 +77,6 @@ func newRoot(code *int) *cobra.Command {
 	root := &cobra.Command{Use: "ai-fleet", SilenceErrors: false}
 	root.Version = versionLine()
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(deploy, initCmd)
+	root.AddCommand(deploy, initCmd, newConfigCmd(code))
 	return root
 }
