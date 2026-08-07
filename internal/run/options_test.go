@@ -1,6 +1,9 @@
 package run
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func opts() Options {
 	return Options{
@@ -105,5 +108,57 @@ func TestExportedValidators(t *testing.T) {
 		if got := ValidEffort(c.effort); got != c.wantE {
 			t.Errorf("ValidEffort(%q) = %v, want %v", c.effort, got, c.wantE)
 		}
+	}
+}
+
+func TestValidateBotCredentials(t *testing.T) {
+	base := Options{Prompt: "p", GitAuthorName: "a", GitAuthorEmail: "e",
+		Model: "opus", Effort: "high", GitProvider: "github", GitRepository: "o/r"}
+
+	bot := base
+	bot.GitEntityType, bot.GitAppID, bot.GitAppPrivateKey = "bot", "123", "/k.pem"
+	if err := bot.Validate(); err != nil {
+		t.Errorf("bot with app credentials: %v", err)
+	}
+	if !bot.PRMode() || !bot.BotMode() {
+		t.Error("PRMode/BotMode must be true")
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*Options)
+		want   string
+	}{
+		{"bot missing app creds", func(o *Options) { o.GitEntityType = "bot" }, "git.app.id and git.app.private-key"},
+		{"bot with token", func(o *Options) {
+			o.GitEntityType, o.GitAppID, o.GitAppPrivateKey, o.GitToken = "bot", "123", "/k.pem", "tok"
+		}, "git.token must not be set"},
+		{"user with app creds", func(o *Options) { o.GitAppID = "123" }, "require git.type"},
+		{"bad type", func(o *Options) { o.GitEntityType = "robot" }, "git.type"},
+		{"user missing token", func(o *Options) {}, "needs a token"},
+		{"provider without repository", func(o *Options) { o.GitRepository = ""; o.GitToken = "tok" }, "both"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o := base
+			c.mutate(&o)
+			err := o.Validate()
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want containing %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestValidateCredentialsWithoutPRModeAreIgnored(t *testing.T) {
+	// A config-stored token (or bot identity) must not break non-PR runs.
+	o := Options{Prompt: "p", GitAuthorName: "a", GitAuthorEmail: "e",
+		Model: "opus", Effort: "high", GitToken: "tok",
+		GitEntityType: "bot", GitAppID: "1", GitAppPrivateKey: "/k.pem"}
+	if err := o.Validate(); err != nil {
+		t.Fatalf("credentials without provider/repository must be ignored: %v", err)
+	}
+	if o.PRMode() {
+		t.Fatal("PRMode must require provider and repository")
 	}
 }
