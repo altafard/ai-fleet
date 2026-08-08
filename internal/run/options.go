@@ -24,6 +24,11 @@ type Options struct {
 	GitProvider    string // PR mode; "github" in v1
 	GitRepository  string
 	GitToken       string
+
+	GitEntityType        string // "user" (default when empty) | "bot"
+	GitAppID             string // bot: GitHub App ID (or Client ID)
+	GitAppPrivateKey     string // bot: path to the RSA PEM (already scope-resolved)
+	GitAppInstallationID string // bot: optional; discovered from the repository when empty
 }
 
 // branchRe restricts branch names to a conservative subset of what git
@@ -44,46 +49,76 @@ var effortLevels = map[string]bool{
 }
 
 // Validate checks flag coherence: exactly one prompt source, the required
-// Dockerfile, git-identity and model/effort flags, a safe branch name, and
-// all-or-none PR-mode flags naming a supported provider. It reports the first
+// Dockerfile, git-identity and model/effort flags, a safe branch name, and —
+// only once provider+repository opt into PR mode — a supported provider and
+// complete credentials (user token, or bot git.app.* fields). Credentials
+// present without provider+repository are ignored, not an error, so a
+// config-stored token never breaks a non-PR run. It reports the first
 // violation found.
 func (o *Options) Validate() error {
 	if (o.Prompt == "") == (o.PromptFile == "") {
 		return errors.New("exactly one of --prompt or --prompt-file is required")
 	}
 	if o.GitAuthorName == "" || o.GitAuthorEmail == "" {
-		return errors.New("--git-author-name and --git-author-email are required")
+		return errors.New("--git-author-name and --git-author-email are required — pass the flags or set git.author.name / git.author.email via `ai-fleet config set`")
 	}
 	if o.Model == "" || o.Effort == "" {
-		return errors.New("--model and --effort are required")
+		return errors.New("--model and --effort are required — pass the flags or set agent.model / agent.effort via `ai-fleet config set`")
 	}
-	if !modelRe.MatchString(o.Model) {
+	if !ValidModel(o.Model) {
 		return fmt.Errorf("invalid --model %q: allowed characters are A-Z a-z 0-9 . _ [ ] -", o.Model)
 	}
-	if !effortLevels[o.Effort] {
+	if !ValidEffort(o.Effort) {
 		return fmt.Errorf("invalid --effort %q: must be one of low, medium, high, xhigh, max", o.Effort)
 	}
 	if o.Branch != "" && !branchRe.MatchString(o.Branch) {
 		return fmt.Errorf("invalid --branch %q: allowed characters are A-Z a-z 0-9 . _ / -", o.Branch)
 	}
-	n := 0
-	for _, v := range []string{o.GitProvider, o.GitRepository, o.GitToken} {
-		if v != "" {
-			n++
+	// PR mode is opted into by provider+repository. Everything below —
+	// git.type validity, the bot/user credential-shape contradictions, and
+	// credential completeness — is credential detail that only matters once
+	// PR mode is opted into: these fields arrive from persistent config, and
+	// a stored token or bot identity must not break non-PR runs.
+	if (o.GitProvider == "") != (o.GitRepository == "") {
+		return errors.New("PR mode needs both --git-provider and --git-repository")
+	}
+	if o.PRMode() {
+		if o.GitProvider != "github" {
+			return fmt.Errorf("unsupported --git-provider %q: v1 supports \"github\"", o.GitProvider)
 		}
-	}
-	if n != 0 && n != 3 {
-		return errors.New("PR mode needs all of --git-provider, --git-repository and --git-token (or AI_FLEET_GIT_TOKEN)")
-	}
-	if n == 3 && o.GitProvider != "github" {
-		return fmt.Errorf("unsupported --git-provider %q: v1 supports \"github\"", o.GitProvider)
+		if o.GitEntityType != "" && o.GitEntityType != "user" && o.GitEntityType != "bot" {
+			return fmt.Errorf("invalid git.type %q: must be \"user\" or \"bot\"", o.GitEntityType)
+		}
+		if o.BotMode() && o.GitToken != "" {
+			return errors.New("git.type is \"bot\": a git token must not be set (check --git-token, the AI_FLEET_GIT_TOKEN environment variable, and git.token in config; bot auth uses git.app.id and git.app.private-key)")
+		}
+		if !o.BotMode() && (o.GitAppID != "" || o.GitAppPrivateKey != "" || o.GitAppInstallationID != "") {
+			return errors.New("git.app.* settings require git.type = \"bot\"")
+		}
+		if o.BotMode() {
+			if o.GitAppID == "" || o.GitAppPrivateKey == "" {
+				return errors.New("PR mode with git.type = \"bot\" needs git.app.id and git.app.private-key")
+			}
+		} else if o.GitToken == "" {
+			return errors.New("PR mode needs a token: --git-token, AI_FLEET_GIT_TOKEN, or `ai-fleet config set git.token`")
+		}
 	}
 	return nil
 }
 
-// PRMode reports whether all three PR-mode inputs (provider, repository,
-// token) are present, which makes a successful run publish a pull request
-// after collect.
+// PRMode reports whether this run publishes a pull request. Credential
+// completeness is Validate's job; presence of provider+repository is the
+// opt-in.
 func (o *Options) PRMode() bool {
-	return o.GitProvider != "" && o.GitRepository != "" && o.GitToken != ""
+	return o.GitProvider != "" && o.GitRepository != ""
 }
+
+// BotMode reports whether PR credentials are a GitHub App, not a user token.
+func (o *Options) BotMode() bool { return o.GitEntityType == "bot" }
+
+// ValidModel reports whether s has the shape of a claude model reference.
+// Shape only — model validity is claude's concern (see modelRe).
+func ValidModel(s string) bool { return modelRe.MatchString(s) }
+
+// ValidEffort reports whether s is one of the claude CLI's effort levels.
+func ValidEffort(s string) bool { return effortLevels[s] }
